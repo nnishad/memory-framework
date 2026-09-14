@@ -295,3 +295,33 @@ enabled **by default** (no opt-in) per the standing directive.
   `GraphActivationTests` (default-on, 2-hop-vs-1-hop reach, allowed-filter/degrade, hub-degree bound).
 
 Code + tests + benchmark are in commit (this section's accompanying change); see `docs/GRAPH_BENCHMARK.json`.
+
+## 13. Deployed the default-on retrieval levers to the LIVE service
+
+A/B/C were committed + benchmarked, but the running memory service (pid 1534) still executed
+**stale** retrieval code. Deployed the committed `retrieval.py` and proved all three levers live.
+
+- **Target:** `run_service.py` does `sys.path.insert(0, '/home/hermes/.hermes/plugins/personal-memory')`,
+  so the LIVE package is the **plugins copy**, not the framework/venv copy — that is the file to sync.
+- **Scope:** only `retrieval.py` differed from the repo (all three features live there); `config.json`
+  already had `semantic.on`, `hindsight` GPU and `temporal.weight 1.0`, and `rerank`/`graph` were absent
+  → they now take the code defaults (enabled) with **no config change**. Rerank model
+  `cross-encoder/ms-marco-MiniLM-L-6-v2` was already cached under the service `HF_HOME` (`model-cache`),
+  so `sentence_transformers 6.0.1` loads it offline. `retrieval.py` was copied LF-normalised,
+  `py_compile`-checked, byte-verified against the repo, and the prior file backed up
+  (`retrieval.py.predeploy-*`).
+- **Safe restart:** `pkill` then **poll until `:8766`+`:9276` free and no `run_service`/`hindsight`/`postgres`
+  linger** (clear after 9s — avoids the Hindsight restart race), relaunch detached as `hermes` sourcing
+  `memory.env`. `:8766` up after 37s; "Application startup complete", `initialization_errors: {}`.
+- **Proved live via the real client CLI** (`python -m personal_memory request /v1/search … && … status`):
+  - `status.capabilities` now contains **`cross_encoder_rerank`** and **`graph_multihop`** (plus the
+    pre-existing `temporal_filters`); `rerank: {enabled:True, loaded:True, unavailable:False}` (the
+    cross-encoder built lazily on the first search), `graph: {enabled:True, hops:2, weight:0.3, …}`.
+  - Real hydrated round-trips succeed: "violet folder bedroom cupboard" → 5 episodes, top
+    `relevance.accepted:True` at `rrf_score:2.0` (the reranker's [1,2] band ceiling ⇒ it ran and
+    promoted the answer); "bicycle garage" returns the stored `garage` memory. All channels fire;
+    the graph channel executes and simply surfaces no *new* bounded leads for those everyday queries.
+- **Net:** the running system now matches the committed defaults — temporal recency, cross-encoder
+  rerank and multi-hop graph activation are all enabled-by-default and verified active end-to-end.
+
+  Scripts: `.e2e/145_deploy_restart.sh`, `.e2e/146b_verify_cli.sh`, `.e2e/147_roundtrip.sh`.
