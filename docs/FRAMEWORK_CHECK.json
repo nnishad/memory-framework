@@ -1,0 +1,18 @@
+{
+  "version": "0.7.0rc1",
+  "schema_version": 6,
+  "framework_tests_passed": 105,
+  "learning_tests_passed": 16,
+  "intelligence_tests_passed": 34,
+  "hermes_bridge_checks_passed": 16,
+  "hermes_tools": 19,
+  "actual_AIAgent_protocol_fixture_passed": true,
+  "cli_smoke_passed": true,
+  "model_adapters_local_HTTP_fixture_tested": true,
+  "automatic_scope_promotion_tested": true,
+  "capability_execution_fixture_tested": true,
+  "external_message_delivery_tested": false,
+  "real_model_learning_tested": false,
+  "production_certified": false,
+  "scope": "Synthetic correctness, permission, lease, retry, recovery and integration checks. No user archive or actual production destination connected."
+}

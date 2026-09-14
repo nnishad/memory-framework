@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "checks": [
+    "copied ASGI launcher",
+    "contract JSONL import",
+    "idempotent replay",
+    "doctor rejects missing host attestation",
+    "role-aware request CLI and runtime schema",
+    "encrypted backup CLI",
+    "isolated restore CLI",
+    "provider selection rollback"
+  ],
+  "live_hermes": false
+}

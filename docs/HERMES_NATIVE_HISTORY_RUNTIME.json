@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "actual_SessionDB": true,
+  "hermes_tag": "v2026.9.11",
+  "checks": [
+    "actual SessionDB schema and append_message import with stable message identity",
+    "native session/messages preserved by read-only synchronization",
+    "actual SessionDB.delete_session propagates to canonical source tombstone"
+  ],
+  "native_session_search_replaced": false,
+  "native_database_modified_by_connector": false
+}

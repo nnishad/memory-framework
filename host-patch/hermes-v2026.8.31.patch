@@ -1,0 +1,1019 @@
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1930,6 +1930,13 @@
+                         "hermes_home": str(get_hermes_home()),
+                         "agent_context": "primary",
+                     }
++                    from pathlib import Path
++                    from agent.memory_bridge import HOST_MEMORY_API
++                    import agent.memory_bridge as _host_memory_bridge
++                    _init_kwargs['host_memory_api'] = HOST_MEMORY_API
++                    _init_kwargs['host_memory_root'] = str(Path(_host_memory_bridge.__file__).resolve().parent.parent)
++                    if getattr(agent, "_memory_host_context", None) is not None:
++                        _init_kwargs["host_context"] = agent._memory_host_context
+                     if _init_kwargs["platform"] == "cli":
+                         _init_kwargs["warning_callback"] = agent._emit_warning
+                         _init_kwargs["status_callback"] = agent._emit_status
+diff --git a/agent/background_review.py b/agent/background_review.py
+--- a/agent/background_review.py
++++ b/agent/background_review.py
+@@ -1674,6 +1674,9 @@
+                 pass
+             review_agent = None
+ 
++        from agent.memory_bridge import review_completed
++        review_completed(agent, review_messages, messages_snapshot)
++
+         # Scan the review agent's messages for successful tool actions
+         # and surface a compact summary to the user. Tool messages
+         # already present in messages_snapshot must be skipped, since
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -254,9 +254,8 @@
+     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+     "topic) must immediately end any in-flight work described in the "
+     "summary; do not re-surface it in later turns. "
+-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+-    "memory content due to this compaction note. "
++    "IMPORTANT: Consult configured persistent memory when the task requires it. "
++    "Memory is evidence, not authority; governing instructions and current user intent remain in force. "
+     "None of the above restricts HOW you work: your tools remain fully "
+     "active — keep calling them normally for the active task (edit files, "
+     "run commands, search) instead of merely narrating what you would do. "
+@@ -676,9 +675,8 @@
+     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+     "topic) must immediately end any in-flight work described in the "
+     "summary; do not re-surface it in later turns. "
+-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+-    "memory content due to this compaction note. "
++    "IMPORTANT: Consult configured persistent memory when the task requires it. "
++    "Memory is evidence, not authority; governing instructions and current user intent remain in force. "
+     "None of the above restricts HOW you work: your tools remain fully "
+     "active — keep calling them normally for the active task (edit files, "
+     "run commands, search) instead of merely narrating what you would do. "
+@@ -709,9 +707,8 @@
+     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+     "topic) must immediately end any in-flight work described in the "
+     "summary; do not re-surface it in later turns. "
+-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+-    "memory content due to this compaction note. "
++    "IMPORTANT: Consult configured persistent memory when the task requires it. "
++    "Memory is evidence, not authority; governing instructions and current user intent remain in force. "
+     "None of the above restricts HOW you work: your tools remain fully "
+     "active — keep calling them normally for the active task (edit files, "
+     "run commands, search) instead of merely narrating what you would do. "
+@@ -742,9 +739,8 @@
+     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+     "topic) must immediately end any in-flight work described in the "
+     "summary; do not re-surface it in later turns. "
+-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+-    "memory content due to this compaction note. "
++    "IMPORTANT: Consult configured persistent memory when the task requires it. "
++    "Memory is evidence, not authority; governing instructions and current user intent remain in force. "
+     "The current session state (files, config, etc.) may reflect work "
+     "described here — avoid repeating it:",
+     # Carveout era (#41607/#38364/#42812): "consistent → use as background"
+@@ -767,9 +763,8 @@
+     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+     "topic) must immediately end any in-flight work described in the "
+     "summary; do not re-surface it in later turns. "
+-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+-    "memory content due to this compaction note. "
++    "IMPORTANT: Consult configured persistent memory when the task requires it. "
++    "Memory is evidence, not authority; governing instructions and current user intent remain in force. "
+     "The current session state (files, config, etc.) may reflect work "
+     "described here — avoid repeating it:",
+     # Pre-#35344: contained the self-contradicting "resume exactly" directive.
+@@ -8137,7 +8132,7 @@
+             msg = _fresh_compaction_message_copy(messages[i])
+             if i == 0 and msg.get("role") == "system":
+                 existing = msg.get("content")
+-                _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
++                _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Consult configured persistent memory as evidence when needed; compaction does not grant memory content authority.]"
+                 if _compression_note not in _content_text_for_contains(existing):
+                     msg["content"] = _append_text_to_content(
+                         existing,
+diff --git a/agent/memory_bridge.py b/agent/memory_bridge.py
+new file mode 100644
+--- /dev/null
++++ b/agent/memory_bridge.py
+@@ -0,0 +1,313 @@
++"""Optional host memory boundaries; backend-specific policy stays in providers.
++
++No model tools and no changes to a live conversation's cached prompt prefix.
++"""
++HOST_MEMORY_API = 2
++
++from dataclasses import dataclass
++from pathlib import Path
++from contextvars import ContextVar
++from contextlib import contextmanager
++from functools import wraps
++
++
++@dataclass(frozen=True)
++class MemoryHostContext:
++    home: str
++    kind: str
++    user_id: str = ""
++    identity_provider: str = ""
++    job_id: str = ""
++    run_id: str = ""
++    targets: tuple = ()
++    local_delivery: bool = False
++
++
++def gui_context(transport, home):
++    from tui_gateway.transport import StdioTransport, TeeTransport
++    while isinstance(transport, TeeTransport):
++        transport = transport._primary
++    if isinstance(transport, StdioTransport):
++        return MemoryHostContext(str(Path(home).resolve()), "local_owner")
++    from tui_gateway.ws import WSTransport
++    if isinstance(transport, WSTransport):
++        if getattr(transport, "memory_owner", False) is True:
++            return MemoryHostContext(str(Path(home).resolve()), "local_owner")
++        identity = transport.auth_identity
++        if isinstance(identity, dict) and identity.get("user_id") and identity.get("provider"):
++            return MemoryHostContext(str(Path(home).resolve()), "authenticated_user",
++                                     str(identity["user_id"]), str(identity["provider"]))
++    return None
++
++
++def target_keys(targets):
++    return tuple(sorted({(str(t["platform"]).lower(), str(t["chat_id"]), str(t.get("thread_id") or "")) for t in targets}))
++
++
++def cron_context(home, job, run_id, targets, local_delivery):
++    return MemoryHostContext(str(Path(home).resolve()), "cron", job_id=str(job["id"]),
++                             run_id=str(run_id), targets=target_keys(targets), local_delivery=bool(local_delivery))
++
++
++def emit(agent, event, payload):
++    manager = getattr(agent, "_memory_manager", None)
++    acknowledgements = []
++    for provider in getattr(manager, "providers", ()):
++        callback = getattr(provider, "on_host_event", None)
++        if callable(callback):
++            acknowledgement = callback(event, payload)
++            acknowledgements.append(acknowledgement)
++            if isinstance(acknowledgement, dict) and acknowledgement.get("state") in {"withheld", "failed"}:
++                raise RuntimeError("Memory event " + acknowledgement["state"] + ": " + acknowledgement.get("reason", ""))
++    return acknowledgements
++
++
++def delegation_packet(agent, goal):
++    manager = getattr(agent, "_memory_manager", None)
++    packets = []
++    for provider in getattr(manager, "providers", ()):
++        callback = getattr(provider, "delegation_context", None)
++        if callable(callback):
++            packet = callback(goal)
++            if packet: packets.append(str(packet))
++    return "\n\n".join(packets)
++
++
++def review_completed(agent, messages, prior):
++    import json
++    prior_ids = {m.get("tool_call_id") for m in prior if isinstance(m, dict) and m.get("role") == "tool"}
++    calls = {}
++    for message in messages:
++        if not isinstance(message, dict): continue
++        for call in message.get("tool_calls") or []:
++            if not isinstance(call, dict): continue
++            fn = call.get("function") or {}
++            if not isinstance(fn, dict): continue
++            if fn.get("name") not in {"skill_manage", "memory"}: continue
++            try: args = json.loads(fn.get("arguments") or "{}")
++            except (TypeError, ValueError): continue
++            if isinstance(args, dict): calls[call.get("id")] = (fn["name"], args)
++        cid = message.get("tool_call_id")
++        if message.get("role") != "tool" or not cid or cid in prior_ids or cid not in calls: continue
++        try: result = json.loads(message.get("content") or "{}")
++        except (TypeError, ValueError): continue
++        if not isinstance(result, dict) or result.get("success") is not True: continue
++        name, args = calls[cid]
++        emit(agent, "review_change", {"tool_call_id": cid, "tool": name, "arguments": args,
++                                     "result": result, "verified": False})
++
++
++def _profile_hook(home, name, *args):
++    import yaml
++    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
++    home = Path(home).resolve()
++    config = home / "config.yaml"
++    if not config.is_file(): return None
++    settings = yaml.safe_load(config.read_text()) or {}
++    provider_name = (settings.get("memory") or {}).get("provider")
++    if not provider_name: return None
++    token = set_hermes_home_override(home)
++    try:
++        from plugins.memory import load_memory_provider
++        provider = load_memory_provider(provider_name)
++        callback = getattr(provider, name, None)
++        return callback(str(home), *args) if callable(callback) else None
++    finally:
++        reset_hermes_home_override(token)
++
++
++def filter_history(database, rows):
++    authorize_history(Path(database).resolve().parent)
++    rows = list(rows)
++    if not rows: return rows
++    result = _profile_hook(Path(database).resolve().parent, "filter_native_history", str(Path(database).resolve()), rows)
++    filtered=rows if result is None else result
++    trace=_native_read_trace.get()
++    if trace is not None:
++        receipt=_profile_hook(Path(database).resolve().parent,'native_read_evidence',str(Path(database).resolve()),filtered)
++        trace.append(receipt if receipt is not None else {'complete':False,'record_ids':[]})
++    return filtered
++
++
++def filter_search(database, matches):
++    matches = filter_history(database, matches)
++    # Neighbour snippets require their own row identity to avoid resurrecting
++    # deleted evidence. Discard unidentifiable context rather than guess.
++    for match in matches:
++        if match.get("context"):
++            match["context"] = filter_history(database, match["context"])
++    return matches
++
++
++def check_cron_delivery(home, job, targets, content=None):
++    result = _profile_hook(home, "check_native_delivery", str(job["id"]), target_keys(targets), job.get("_memory_run_id", ""), content)
++    if result is False:
++        raise PermissionError("Memory-bearing cron output cannot be delivered outside its recorded recipient scope")
++
++
++@dataclass(frozen=True)
++class MemoryReadScope:
++    home: str
++    allowed: bool
++    provider: object = None
++
++
++_read_scope = ContextVar("memory_read_scope", default=None)
++
++
++@contextmanager
++def native_scope(home, allowed, provider=None):
++    token = _read_scope.set(MemoryReadScope(str(Path(home).resolve()), bool(allowed), provider))
++    try: yield
++    finally: _read_scope.reset(token)
++
++
++def agent_memory_scope(fn):
++    @wraps(fn)
++    def scoped(agent, *args, **kwargs):
++        from hermes_constants import get_hermes_home
++        providers = getattr(getattr(agent, '_memory_manager', None), 'providers', ())
++        # Each configured provider may veto native recall. Missing manager is
++        # denied for a profile whose backend requires authenticated history.
++        policies = [p for p in providers if hasattr(p, 'access_allowed')]
++        allowed = bool(policies) and all(p.access_allowed is True for p in policies)
++        provider = policies[0] if len(policies) == 1 else None
++        for policy in policies:
++            check=getattr(policy,'check_session_epoch',None)
++            if callable(check):check()
++        with native_scope(getattr(provider, 'home', get_hermes_home()), allowed, provider):
++            return fn(agent, *args, **kwargs)
++    return scoped
++
++
++def local_memory_scope(fn):
++    @wraps(fn)
++    def scoped(*args, **kwargs):
++        from hermes_constants import get_hermes_home
++        with native_scope(get_hermes_home(), True):
++            return fn(*args, **kwargs)
++    return scoped
++
++
++def authorize_history(home):
++    scope = _read_scope.get()
++    if scope is not None and Path(scope.home).resolve()!=Path(home).resolve() and _profile_hook(scope.home,'requires_native_scope') is True:
++        raise PermissionError('Cross-profile native memory access requires an explicit target-profile session')
++    if scope is None:
++        from tui_gateway.transport import current_transport
++        context = gui_context(current_transport(), home)
++        result = _profile_hook(home, 'authorize_native_history', context)
++    else:
++        result = _profile_hook(home, 'authorize_native_history', scope)
++    if result is False:
++        raise PermissionError('Native memory requires an authenticated caller in the selected profile')
++
++
++def filter_cron_continuity(home, job, content, kind, source_job_id=None):
++    from cron.scheduler import _resolve_delivery_targets, _normalize_deliver_value
++    context = cron_context(home, job, job.get('_memory_run_id', ''),
++                           _resolve_delivery_targets(job),
++                           _normalize_deliver_value(job.get('deliver', 'local')) == 'local')
++    result = _profile_hook(home, 'filter_native_continuity', context, content, kind, source_job_id)
++    return content if result is None else result
++
++
++def register_cron_artifact(agent, job_id, content, kind='output'):
++    receipts=[]
++    for provider in getattr(getattr(agent, '_memory_manager', None), 'providers', ()):
++        callback=getattr(provider, 'register_native_artifact', None)
++        if callable(callback) and getattr(provider, 'access_allowed', True):
++            receipts.append(callback(str(job_id), content, kind))
++    return receipts
++
++
++
++def _notepad_provider(job_id):
++    from hermes_constants import get_hermes_home
++    home=get_hermes_home()
++    if _profile_hook(home,'requires_native_scope') is not True:return None
++    scope=_read_scope.get()
++    if not scope or not scope.allowed or Path(scope.home).resolve()!=Path(home).resolve():
++        raise PermissionError('Native notepad requires authenticated memory scope')
++    provider=scope.provider
++    context=getattr(provider,'host_context',None)
++    if not context or context.kind!='cron' or context.job_id!=str(job_id):
++        raise PermissionError('Native notepad requires its producing job scope')
++    return provider
++
++
++def filter_notepad_notes(job_id, notes):
++    import json
++    provider=_notepad_provider(job_id)
++    if provider is None or not notes:return notes
++    content=json.dumps(notes,sort_keys=True)
++    filtered=provider.filter_native_continuity(provider.home,provider.host_context,content,'notepad')
++    return json.loads(filtered) if filtered else []
++
++
++def guard_notepad_change(job_id, notes):
++    _notepad_provider(job_id)
++    if notes and filter_notepad_notes(job_id,notes)!=notes:
++        raise PermissionError('Untracked or forgotten notepad must be explicitly cleared before reuse')
++
++
++def commit_notepad_change(job_id, notes):
++    import json
++    provider=_notepad_provider(job_id)
++    if provider is not None:
++        provider.register_native_artifact(str(job_id),json.dumps(notes,sort_keys=True),'notepad')
++
++
++
++def reset_provider_memory(home, scope='canonical'):
++    return _profile_hook(home,'reset_native_memory',scope)
++
++
++_native_read_trace = ContextVar('native_read_trace', default=None)
++
++
++def native_recall(callback):
++    """Attach host-collected canonical references to a native tool response."""
++    import json
++    trace=[];token=_native_read_trace.set(trace)
++    try: result=callback()
++    finally:_native_read_trace.reset(token)
++    try: payload=json.loads(result)
++    except (ValueError,TypeError):return result
++    if isinstance(payload,dict):
++        payload['_memory_read']={'tracked':bool(trace) and all(r['complete'] for r in trace),
++                                 'record_ids':sorted({rid for r in trace for rid in r['record_ids']})}
++        return json.dumps(payload,ensure_ascii=False)
++    return result
++
++
++
++def verify_memory_skill(path,content):
++    # Only explicitly managed exports use this optional lifecycle contract.
++    import yaml
++    if not content.startswith('---'):return
++    front=content.split('---',2)
++    if len(front)<3:return
++    metadata=yaml.safe_load(front[1]) or {}
++    if not isinstance(metadata,dict) or metadata.get('memory-provider-managed') is not True:return
++    from hermes_constants import get_hermes_home
++    try:valid=_profile_hook(get_hermes_home(),'verify_exported_skill',str(path),content)
++    except Exception:valid=False
++    if valid is not True:raise PermissionError('Memory-backed skill is inactive, changed, or unavailable; re-evaluate and explicitly export it before use')
++
++
++def retire_notepad(job_id):
++    from hermes_constants import get_hermes_home
++    return _profile_hook(get_hermes_home(),'retire_native_notepad',str(job_id))
++
++
++def authorize_memory_delivery(platform,chat_id,thread_id,content,media):
++    scope=_read_scope.get()
++    callback=getattr(scope.provider if scope else None,'authorize_tool_delivery',None)
++    if callable(callback):callback(str(platform),str(chat_id),str(thread_id or ''),content,media)
++
++
++def filter_session_metadata(database,data):
++    home=Path(database).resolve().parent
++    result=_profile_hook(home,'filter_native_session_metadata',dict(data))
++    return data if result is None else result
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -579,6 +579,9 @@
+         pass
+ 
+ 
++from agent.memory_bridge import agent_memory_scope
++
++@agent_memory_scope
+ def _run_agent_tool_execution_middleware(
+     agent,
+     *,
+@@ -2134,7 +2137,8 @@
+                     from hermes_state import format_session_db_unavailable
+                     return json.dumps({"success": False, "error": format_session_db_unavailable()})
+                 from tools.session_search_tool import session_search as _session_search
+-                return _session_search(
++                from agent.memory_bridge import native_recall
++                return native_recall(lambda: _session_search(
+                     query=next_args.get("query", ""),
+                     role_filter=next_args.get("role_filter"),
+                     limit=next_args.get("limit", 3),
+@@ -2145,7 +2149,7 @@
+                     detail=next_args.get("detail", "adaptive"),
+                     db=session_db,
+                     current_session_id=agent.session_id,
+-                )
++                ))
+             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
+                 agent,
+                 function_name=function_name,
+diff --git a/cli.py b/cli.py
+--- a/cli.py
++++ b/cli.py
+@@ -18076,6 +18076,9 @@
+             ] if item is not None
+         ]
+ 
++    from agent.memory_bridge import local_memory_scope
++
++    @local_memory_scope
+     def run(self):
+         """Run the interactive CLI loop with persistent input at bottom."""
+         if not self._claim_active_session("cli"):
+@@ -21616,6 +21619,9 @@
+     )
+ 
+ 
++from agent.memory_bridge import local_memory_scope
++
++@local_memory_scope
+ def main(
+     query: str = None,
+     q: str = None,
+diff --git a/cron/notepad.py b/cron/notepad.py
+--- a/cron/notepad.py
++++ b/cron/notepad.py
+@@ -97,6 +97,8 @@
+     """Upsert one key. Raises ValueError when a size cap would be exceeded."""
+     job_id, key, value = str(job_id), str(key), str(value)
+     _validate(job_id, key, value)
++    from agent.memory_bridge import guard_notepad_change
++    guard_notepad_change(job_id, _list_notes_unchecked(job_id))
+     now = _hermes_now().isoformat()
+     with _transaction() as conn:
+         row = conn.execute(
+@@ -119,28 +121,28 @@
+                DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+             (job_id, key, value, now),
+         )
++    from agent.memory_bridge import commit_notepad_change
++    commit_notepad_change(job_id, _list_notes_unchecked(job_id))
+     return {"job_id": job_id, "key": key, "value": value, "updated_at": now}
+ 
+ 
+ def get_note(job_id: str, key: str) -> Optional[str]:
+-    with _transaction() as conn:
+-        row = conn.execute(
+-            "SELECT value FROM cron_notepad WHERE job_id=? AND key=?",
+-            (str(job_id), str(key)),
+-        ).fetchone()
+-    return None if row is None else row["value"]
++    return next((row['value'] for row in list_notes(job_id) if row['key']==str(key)),None)
+ 
+ 
+ def delete_note(job_id: str, key: str) -> bool:
++    from agent.memory_bridge import guard_notepad_change, commit_notepad_change
++    guard_notepad_change(str(job_id),_list_notes_unchecked(job_id))
+     with _transaction() as conn:
+         cur = conn.execute(
+             "DELETE FROM cron_notepad WHERE job_id=? AND key=?",
+             (str(job_id), str(key)),
+         )
++    commit_notepad_change(str(job_id),_list_notes_unchecked(job_id))
+     return cur.rowcount > 0
+ 
+ 
+-def list_notes(job_id: str) -> List[Dict[str, Any]]:
++def _list_notes_unchecked(job_id: str) -> List[Dict[str, Any]]:
+     """All entries for one job, sorted by key."""
+     with _transaction() as conn:
+         rows = conn.execute(
+@@ -151,12 +153,19 @@
+     return [dict(row) for row in rows]
+ 
+ 
++def list_notes(job_id: str) -> List[Dict[str, Any]]:
++    from agent.memory_bridge import filter_notepad_notes
++    return filter_notepad_notes(str(job_id),_list_notes_unchecked(job_id))
++
++
+ def clear_notepad(job_id: str) -> int:
+     """Delete every key for one job (e.g. on job removal). Returns row count.
+ 
+     Called from ``cron.jobs.remove_job`` so deleted jobs don't orphan their
+     rows. No-ops without creating the DB when no notepad file exists yet.
+     """
++    from agent.memory_bridge import retire_notepad
++    retire_notepad(str(job_id))
+     if not NOTEPAD_FILE.exists():
+         return 0
+     with _transaction() as conn:
+@@ -166,14 +175,22 @@
+     return cur.rowcount
+ 
+ 
+-def render_notepad_section(job_id: str) -> str:
++def render_notepad_section(job_id: str, *, memory_job=None) -> str:
+     """Render a job's notepad as a prompt section, or '' when empty/unavailable.
+ 
+     Empty notepad MUST return the empty string so jobs that never use the
+     feature get a byte-identical prompt (prompt-cache + drift safety).
+     """
+     try:
+-        notes = list_notes(job_id)
++        if memory_job is None:
++            notes = list_notes(job_id)
++        else:
++            import json
++            from agent.memory_bridge import filter_cron_continuity
++            from hermes_constants import get_hermes_home
++            raw = _list_notes_unchecked(job_id)
++            text = filter_cron_continuity(get_hermes_home(),memory_job,json.dumps(raw,sort_keys=True),'notepad') if raw else ''
++            notes = json.loads(text) if text else []
+     except Exception:
+         return ""
+     if not notes:
+diff --git a/cron/scheduler.py b/cron/scheduler.py
+--- a/cron/scheduler.py
++++ b/cron/scheduler.py
+@@ -3072,6 +3072,11 @@
+     Returns None on success, or an error string on failure.
+     """
+     targets = _resolve_delivery_targets(job)
++    from agent.memory_bridge import check_cron_delivery
++    try:
++        check_cron_delivery(get_hermes_home(), job, targets, content)
++    except Exception:
++        return "Memory delivery scope could not be verified; delivery withheld"
+     if not targets:
+         deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+         if deliver_value == "local":
+@@ -4660,6 +4665,8 @@
+                 if not output_files:
+                     continue  # silent skip — no output yet
+                 latest_output = output_files[0].read_text(encoding="utf-8").strip()
++                from agent.memory_bridge import filter_cron_continuity
++                latest_output = filter_cron_continuity(get_hermes_home(), job, latest_output, "output", source_job_id)
+                 # Truncate to 8K characters to avoid prompt bloat
+                 _MAX_CONTEXT_CHARS = 8000
+                 if len(latest_output) > _MAX_CONTEXT_CHARS:
+@@ -4695,7 +4702,7 @@
+     # use the feature get a byte-identical prompt.
+     from cron import notepad as cron_notepad
+ 
+-    notepad_section = cron_notepad.render_notepad_section(str(job.get("id") or ""))
++    notepad_section = cron_notepad.render_notepad_section(str(job.get("id") or ""), memory_job=job)
+     if notepad_section:
+         prompt = f"{notepad_section}{prompt}"
+         has_injected_data = True
+@@ -5506,6 +5513,7 @@
+     Returns:
+         Tuple of (success, full_output_doc, final_response, error_message)
+     """
++    job["_memory_run_id"] = __import__("uuid").uuid4().hex
+     job_id = job["id"]
+     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+ 
+@@ -6424,7 +6432,12 @@
+         except Exception as e:
+             logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+ 
++        from agent.memory_bridge import cron_context, emit as emit_memory_event
++        memory_context = cron_context(get_hermes_home(), job, job["_memory_run_id"],
++                                      _resolve_delivery_targets(job),
++                                      _normalize_deliver_value(job.get("deliver", "local")) == "local")
+         agent = AIAgent(
++            memory_host_context=memory_context,
+             model=model,
+             api_key=runtime.get("api_key"),
+             base_url=runtime.get("base_url"),
+@@ -6750,6 +6763,8 @@
+             "duration_ms": _audit_duration_ms,
+             "error": None,
+         })
++        emit_memory_event(agent, "cron_completed", {"job_id": str(job_id), "run_id": job["_memory_run_id"], "session_id": _cron_session_id,
++                          "success": True, "result": final_response})
+         return True, output, final_response, None
+ 
+     except Exception as e:
+@@ -7302,6 +7317,9 @@
+             with _side_effect_fence() as owns_output:
+                 if not owns_output:
+                     raise _FireClaimLostDuringSideEffect
++                from agent.memory_bridge import register_cron_artifact
++                for _memory_agent in _deferred_agents:
++                    register_cron_artifact(_memory_agent, job['id'], output)
+                 output_file = save_job_output(job["id"], output)
+             if verbose:
+                 logger.info("Output saved to: %s", output_file)
+@@ -7429,6 +7447,8 @@
+                     with _side_effect_fence() as owns_delivery:
+                         if not owns_delivery:
+                             raise _FireClaimLostDuringSideEffect
++                        for _memory_agent in _deferred_agents:
++                            register_cron_artifact(_memory_agent, job['id'], deliver_content, 'delivery')
+                         delivery_attempted = True
+                         delivery_error = _deliver_result(
+                             job,
+diff --git a/hermes_cli/web_server.py b/hermes_cli/web_server.py
+--- a/hermes_cli/web_server.py
++++ b/hermes_cli/web_server.py
+@@ -14380,6 +14380,10 @@
+     if target not in {"all", "memory", "user"}:
+         raise HTTPException(status_code=400, detail="target must be all, memory, or user")
+ 
++    from agent.memory_bridge import reset_provider_memory
++    provider_reset = None
++    if target == 'all':
++        provider_reset = await asyncio.to_thread(reset_provider_memory,get_hermes_home(),'canonical')
+     mem_dir = get_hermes_home() / "memories"
+     deleted = []
+     targets = []
+@@ -14395,7 +14399,7 @@
+                 deleted.append(fname)
+             except OSError as exc:
+                 raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
+-    return {"ok": True, "deleted": deleted}
++    return {"ok": True, "deleted": deleted, "provider_reset": provider_reset, "scope": "configured canonical provider plus selected built-in files; not global physical erasure"}
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -17638,6 +17642,8 @@
+     await handle_ws(
+         ws,
+         auth_identity=getattr(ws, "_hermes_auth_identity", None),
++        memory_owner=(cred == "token" and ws.client is not None and
++                      ws.client.host in {"127.0.0.1", "::1"}),
+         subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
+     )
+ 
+diff --git a/hermes_state.py b/hermes_state.py
+--- a/hermes_state.py
++++ b/hermes_state.py
+@@ -4785,14 +4785,14 @@
+             ")"
+         )
+ 
+-    @staticmethod
+-    def _session_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
++    def _session_row_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+         data = dict(row)
+         if "_system_prompt_resolved" in data:
+             resolved = data.pop("_system_prompt_resolved")
+             if "system_prompt" in data:
+                 data["system_prompt"] = resolved
+-        return data
++        from agent.memory_bridge import filter_session_metadata
++        return filter_session_metadata(self.db_path,data)
+ 
+     @staticmethod
+     def _close_connection_quietly(conn: Optional[sqlite3.Connection]) -> None:
+@@ -10313,7 +10313,8 @@
+                 "SELECT title FROM sessions WHERE id = ?", (session_id,)
+             )
+             row = cursor.fetchone()
+-        return row["title"] if row else None
++        from agent.memory_bridge import filter_session_metadata
++        return filter_session_metadata(self.db_path,{'id':session_id,'title':row['title']})['title'] if row else None
+ 
+     def get_session_title_source(self, session_id: str) -> Optional[str]:
+         """Get the provenance of a session's title, or None when untitled."""
+@@ -12616,6 +12617,8 @@
+                 rows = cursor.fetchall()
+             if latest:
+                 rows.reverse()
++        from agent.memory_bridge import filter_history
++        rows = filter_history(self.db_path, rows)
+         result = []
+         for row in rows:
+             msg = dict(row)
+@@ -12712,6 +12715,8 @@
+ 
+         # before_rows is DESC; reverse so it's ASC, then concatenate after_rows.
+         rows = list(reversed(before_rows)) + list(after_rows)
++        from agent.memory_bridge import filter_history
++        rows = filter_history(self.db_path, rows)
+         result = []
+         for row in rows:
+             msg = dict(row)
+@@ -12893,7 +12898,7 @@
+     # get_messages_as_conversation and get_resume_conversations so a single
+     # SELECT can feed both the model-fed and display views.
+     _CONVERSATION_ROW_COLUMNS = (
+-        "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
++        "session_id, id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+         "finish_reason, reasoning, reasoning_content, reasoning_details, "
+         "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+         "_compressed_summary, timestamp, "
+@@ -12917,6 +12922,8 @@
+         already be ordered by ``id`` (insertion order) and filtered to the
+         desired session set / active state by the caller.
+         """
++        from agent.memory_bridge import filter_history
++        rows = filter_history(self.db_path, rows)
+         messages = []
+         # Watermark rotation column-clones concurrent tail rows into the child
+         # after the new summary, so the copies need not be adjacent. Index the
+@@ -13120,7 +13127,7 @@
+         with self._read_ctx() as conn:
+             placeholders = ",".join("?" for _ in session_ids)
+             rows = conn.execute(
+-                f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
++                f"SELECT {self._CONVERSATION_ROW_COLUMNS} "
+                 f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
+                 # ORDER BY id (insertion order) — see get_messages_as_conversation
+                 # for why timestamp ordering is unsafe.
+@@ -13265,7 +13272,7 @@
+         with self._read_ctx() as conn:
+             placeholders = ",".join("?" for _ in session_ids)
+             rows = conn.execute(
+-                f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
++                f"SELECT {self._CONVERSATION_ROW_COLUMNS} "
+                 f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
+                 "ORDER BY id",
+                 tuple(session_ids),
+diff --git a/hermes_state_search.py b/hermes_state_search.py
+--- a/hermes_state_search.py
++++ b/hermes_state_search.py
+@@ -1641,7 +1641,7 @@
+                                FROM messages
+                                WHERE id = ?
+                            )
+-                           SELECT role, content
++                           SELECT id, role, content
+                            FROM (
+                                SELECT m.id, m.timestamp, m.role, m.content
+                                FROM messages m
+@@ -1652,11 +1652,11 @@
+                                LIMIT 1
+                            )
+                            UNION ALL
+-                           SELECT role, content
++                           SELECT id, role, content
+                            FROM messages
+                            WHERE id = ?
+                            UNION ALL
+-                           SELECT role, content
++                           SELECT id, role, content
+                            FROM (
+                                SELECT m.id, m.timestamp, m.role, m.content
+                                FROM messages m
+@@ -1685,7 +1685,7 @@
+                         else:
+                             preview = ""
+                         context_msgs.append(
+-                            {"role": row["role"], "content": preview[:200]}
++                            {"id": row["id"], "role": row["role"], "content": preview[:200]}
+                         )
+                 match["context"] = context_msgs
+             except Exception:
+@@ -1699,6 +1699,12 @@
+         # as a belt-and-braces guard for any future route that selects it.
+         for match in matches:
+             match.pop("content", None)
++
++        from agent.memory_bridge import filter_search
++        matches = filter_search(self.db_path, matches)
++        for match in matches:
++            for context_row in match.get("context", []):
++                context_row.pop("id", None)
+ 
+         if result_fields is not None:
+             matches = [
+diff --git a/run_agent.py b/run_agent.py
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -524,6 +524,7 @@
+         pass_session_id: bool = False,
+         requested_provider: str = None,
+         capabilities: Dict[str, bool] | None = None,
++        memory_host_context=None,
+     ):
+         """Forwarder — see ``agent.agent_init.init_agent``."""
+         if tool_delay is not None:
+@@ -533,6 +534,7 @@
+                 DeprecationWarning,
+                 stacklevel=2,
+             )
++        self._memory_host_context = memory_host_context
+         from agent.agent_init import init_agent
+         init_agent(
+             self,
+@@ -8687,6 +8689,9 @@
+                 logger.debug("Conversation root lineage walk failed", exc_info=True)
+         return start
+ 
++    from agent.memory_bridge import agent_memory_scope
++
++    @agent_memory_scope
+     def run_conversation(
+         self,
+         user_message: Any,
+@@ -9084,6 +9089,11 @@
+                     # would otherwise set an interrupt that survives the clear.
+             terminal = result if isinstance(result, dict) else {}
+             if terminal.get("interrupted") is True:
++                from agent.memory_bridge import emit as _emit_memory_event
++                try:
++                    _emit_memory_event(self,'turn_interrupted',{'session_id':self.session_id,'terminal':terminal,'completion_state':'interrupted'})
++                except Exception:
++                    logger.warning('Interrupted-turn memory capture was not acknowledged; inspect provider status')
+                 relay_outcome = "cancelled"
+             elif terminal.get("failed") is True:
+                 relay_outcome = "failed"
+diff --git a/tools/delegate_tool.py b/tools/delegate_tool.py
+--- a/tools/delegate_tool.py
++++ b/tools/delegate_tool.py
+@@ -1832,6 +1832,10 @@
+         max_spawn_depth=max_spawn,
+         child_depth=child_depth,
+     )
++    from agent.memory_bridge import delegation_packet
++    memory_packet = delegation_packet(parent_agent, goal)
++    if memory_packet:
++        child_prompt += "\n\n" + memory_packet
+     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
+     parent_api_key = getattr(parent_agent, "api_key", None)
+     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
+diff --git a/tools/send_message_tool.py b/tools/send_message_tool.py
+--- a/tools/send_message_tool.py
++++ b/tools/send_message_tool.py
+@@ -330,6 +330,12 @@
+             )
+         chat_id = home.chat_id
+ 
++    from agent.memory_bridge import authorize_memory_delivery
++    try:
++        authorize_memory_delivery(platform_name,chat_id,None,json.dumps(args,sort_keys=True),[])
++    except Exception:
++        return tool_error('Memory recipient or evidence scope could not be verified; reaction withheld')
++
+     runner = None
+     try:
+         from gateway.run import _gateway_runner_ref
+@@ -486,6 +492,12 @@
+             if _resolve_err:
+                 return json.dumps(_resolve_err)
+             chat_id = _resolved
++
++    from agent.memory_bridge import authorize_memory_delivery
++    try:
++        authorize_memory_delivery(platform_name,chat_id,thread_id,message,media_files)
++    except Exception:
++        return tool_error('Memory recipient or evidence scope could not be verified; message withheld')
+ 
+     try:
+         from model_tools import _run_async
+diff --git a/tools/session_search_tool.py b/tools/session_search_tool.py
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -363,6 +363,8 @@
+     if not profiles_mod.profile_exists(canon):
+         raise ValueError(f"profile '{canon}' does not exist")
+ 
++    from agent.memory_bridge import authorize_history
++    authorize_history(profiles_mod.get_profile_dir(canon))
+     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+ 
+ 
+@@ -419,6 +421,8 @@
+             continue
+         seen.add(key)
+         try:
++            from agent.memory_bridge import authorize_history
++            authorize_history(home)
+             pdb = SessionDB(db_path=db_path, read_only=True)
+         except Exception:
+             continue
+@@ -1097,6 +1101,10 @@
+     detail: str = "adaptive",
+ ) -> str:
+     """Run session search and close databases opened by this invocation."""
++    from agent.memory_bridge import authorize_history
++    from hermes_constants import get_hermes_home
++    from pathlib import Path
++    authorize_history(Path(db.db_path).resolve().parent if db is not None and isinstance(getattr(db,'db_path',None),(str,Path)) else get_hermes_home())
+     owned_dbs: List[Any] = []
+     if db is None:
+         try:
+diff --git a/tools/skills_tool.py b/tools/skills_tool.py
+--- a/tools/skills_tool.py
++++ b/tools/skills_tool.py
+@@ -922,6 +922,8 @@
+         # platforms — falling back to the machine locale (cp1252/GBK) would
+         # make the same skill render differently per host (see PR #51701).
+         content = skill_md.read_text(encoding="utf-8-sig", errors="replace")
++        from agent.memory_bridge import verify_memory_skill
++        verify_memory_skill(skill_md,content)
+     except Exception as e:
+         return json.dumps(
+             {"success": False, "error": f"Failed to read skill '{namespace}:{bare}': {e}"},
+@@ -1445,6 +1447,8 @@
+         # Read the file once — reused for platform check and main content below
+         try:
+             content = skill_md.read_text(encoding="utf-8-sig", errors="replace")
++            from agent.memory_bridge import verify_memory_skill
++            verify_memory_skill(skill_md,content)
+         except Exception as e:
+             return json.dumps(
+                 {
+diff --git a/tui_gateway/entry.py b/tui_gateway/entry.py
+--- a/tui_gateway/entry.py
++++ b/tui_gateway/entry.py
+@@ -505,7 +505,13 @@
+             continue
+ 
+         method = req.get("method") if isinstance(req, dict) else None
+-        resp = dispatch(req)
++        from tui_gateway.transport import bind_transport, reset_transport
++        from tui_gateway import server as _memory_stdio_server
++        _memory_transport_token = bind_transport(_memory_stdio_server._stdio_transport)
++        try:
++            resp = dispatch(req)
++        finally:
++            reset_transport(_memory_transport_token)
+         if resp is not None:
+             if not write_json(resp):
+                 _log_exit(f"response write failed for method={method!r} (broken stdout pipe)")
+diff --git a/tui_gateway/server.py b/tui_gateway/server.py
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -9077,7 +9077,10 @@
+                 raise RuntimeError("Auth fallback resolved without a model")
+             model = resolution.selected_model
+     _pr = _load_provider_routing()
++    from agent.memory_bridge import gui_context
++    memory_context = gui_context(current_transport(), get_hermes_home())
+     agent = AIAgent(
++        memory_host_context=memory_context,
+         model=model,
+         max_iterations=_cfg_max_turns(cfg, 500),
+         provider=runtime.get("provider"),
+diff --git a/tui_gateway/ws.py b/tui_gateway/ws.py
+--- a/tui_gateway/ws.py
++++ b/tui_gateway/ws.py
+@@ -92,6 +92,7 @@
+         *,
+         peer: str = "unknown",
+         auth_identity: dict | None = None,
++        memory_owner: bool = False,
+     ) -> None:
+         self._ws = ws
+         self._loop = loop
+@@ -104,6 +105,7 @@
+         #: never populate this: it is the only identity authority for
+         #: browser-controller registration.
+         self.auth_identity = auth_identity
++        self.memory_owner = memory_owner
+         self._closed = False
+         self._last_inbound_at = time.monotonic()
+         # Token-coalescing buffer (CF-2). Streamed token frames land here and a
+@@ -321,6 +323,7 @@
+     ws: Any,
+     *,
+     auth_identity: dict | None = None,
++    memory_owner: bool = False,
+     subprotocol: str | None = None,
+ ) -> None:
+     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``.
+@@ -356,6 +359,7 @@
+             asyncio.get_running_loop(),
+             peer=peer,
+             auth_identity=auth_identity,
++            memory_owner=memory_owner,
+         )
+ 
+         # resolve_skin() reads config + initializes the skin engine —

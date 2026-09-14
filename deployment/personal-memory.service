@@ -1,0 +1,30 @@
+# User service template. Adjust the virtualenv path if needed.
+[Unit]
+Description=Hermes personal memory
+After=network.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/hermes-memory/venv/bin/python %h/.hermes/personal-memory/run_service.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=150
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.hermes/personal-memory
+# Enable only if the host supports this user-service sandbox.
+# Model cache must be preloaded here or placed in another explicit writable path.
+Environment=HF_HOME=%h/.hermes/personal-memory/model-cache
+Environment=TOKENIZERS_PARALLELISM=false
+LimitNOFILE=4096
+TasksMax=128
+MemoryHigh=4G
+MemoryMax=6G
+
+[Install]
+WantedBy=default.target

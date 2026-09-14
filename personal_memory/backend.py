@@ -1,0 +1,19 @@
+"""Retrieval extension boundary; canonical storage stays owned by Store."""
+import importlib
+from typing import Protocol
+
+
+class RetrievalBackend(Protocol):
+    def search(self, **query) -> dict: ...
+
+
+def load_backend(store, entrypoint=None, config=None):
+    if not entrypoint:
+        from .retrieval import Hybrid
+        return Hybrid(store, config)
+    # Only operator configuration can choose Python code, never a model tool argument.
+    module, factory = entrypoint.split(":", 1)
+    backend = getattr(importlib.import_module(module), factory)(store)
+    if not callable(getattr(backend, "search", None)):
+        raise ValueError("Retrieval backend must expose search(**query)")
+    return backend

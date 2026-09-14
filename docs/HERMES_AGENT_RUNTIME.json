@@ -1,0 +1,17 @@
+{
+  "passed": true,
+  "actual_AIAgent": true,
+  "model_endpoint": "local deterministic OpenAI protocol fixture",
+  "live_language_model": false,
+  "requests": 3,
+  "checks": [
+    "provider initialization in real AIAgent",
+    "memory tools in model request",
+    "automatic memory evidence or bounded pending status in model context",
+    "parallel investigation model tool request dispatched to memory service",
+    "requirement verification metadata returned to model",
+    "memory result returned to model",
+    "final response completed",
+    "completed turn durably captured"
+  ]
+}

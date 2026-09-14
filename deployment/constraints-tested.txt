@@ -1,0 +1,9 @@
+# Direct production dependencies exercised by this release; not a complete lockfile.
+uvicorn==0.52.4
+cryptography==50.0.1
+jsonschema==4.26.0
+fastembed==0.8.0
+PyYAML==6.0.3
+hindsight-api-slim==0.9.2
+hindsight-embed==0.9.2
+hnswlib==0.8.0

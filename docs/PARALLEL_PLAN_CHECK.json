@@ -1,0 +1,1642 @@
+{
+  "scope": "1,226 fictional records; keyword-only backend; six explicitly authored plan fixtures. No real Hermes model or automatic plan-quality evaluation.",
+  "passed": 6,
+  "total": 6,
+  "cases": [
+    {
+      "goal": "Who fixed my automobile?",
+      "branches": [
+        {
+          "id": "repair",
+          "intent": "Find car mechanic recommendation",
+          "queries": [
+            "car engine repair",
+            "garage mechanic"
+          ]
+        }
+      ],
+      "expected": [
+        "garage"
+      ],
+      "found": [
+        "garage",
+        "group-unknown",
+        "background-0020",
+        "background-0025",
+        "background-0028",
+        "background-0039",
+        "background-0057",
+        "background-0142"
+      ],
+      "passed": true,
+      "result": {
+        "retrieval": "parallel_investigation",
+        "goal": "Who fixed my automobile?",
+        "episodes": [
+          {
+            "id": "rec_d717d672c54dc394bc11e3ee44dd773e",
+            "source": "whatsapp",
+            "source_id": "garage",
+            "occurred_at": "2022-02-02T12:00:00+00:00",
+            "text": "Mira recommended Copper Finch Garage. The mechanic repaired my car engine there.",
+            "span_start": 0,
+            "span_end": 80,
+            "truncated": false,
+            "branch_ids": [
+              "repair"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_c2583f4ce907439bcc476874f6069320",
+            "source": "whatsapp",
+            "source_id": "group-unknown",
+            "occurred_at": "2021-06-01T12:00:00+00:00",
+            "text": "I can repair bicycle brakes. Ask for Theo at Cedar Cycles.",
+            "span_start": 0,
+            "span_end": 58,
+            "truncated": false,
+            "branch_ids": [
+              "repair"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_0935fb9d41b6d65892c167778c980787",
+            "source": "health",
+            "source_id": "background-0020",
+            "occurred_at": "2025-02-07T00:00:00+00:00",
+            "text": "Reminder: review car parking notes for the Maple Park meeting.",
+            "span_start": 0,
+            "span_end": 62,
+            "truncated": false,
+            "branch_ids": [
+              "repair"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_d05262488ec821f10fa36bdce5ae24c8",
+            "source": "email",
+            "source_id": "background-0025",
+            "occurred_at": "2025-09-10T00:00:00+00:00",
+            "text": "Reminder: review car parking notes for the Maple Park meeting.",
+            "span_start": 0,
+            "span_end": 62,
+            "truncated": false,
+            "branch_ids": [
+              "repair"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_53a8ccfc24591dc120f34ea262852391",
+            "source": "email",
+            "source_id": "background-0028",
+            "occurred_at": "2024-04-19T00:00:00+00:00",
+            "text": "Invoice 28 for car parking at Harbour Hall was received.",
+            "span_start": 0,
+            "span_end": 56,
+            "truncated": false,
+            "branch_ids": [
+              "repair"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_66b7b2354359f2a766f0a52092fb1ea7",
+            "source": "whatsapp",
+            "source_id": "background-0039",
+            "occurred_at": "2025-07-03T00:00:00+00:00",
+            "text": "Invoice 39 for car parking at North Court was received.",
+            "span_start": 0,
+            "span_end": 55,
+            "truncated": false,
+            "branch_ids": [
+              "repair"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_108a36f233de8997a99386f10269d1e1",
+            "source": "whatsapp",
+            "source_id": "background-0057",
+            "occurred_at": "2026-08-02T00:00:00+00:00",
+            "text": "Invoice 57 for car parking at Elm Square was received.",
+            "span_start": 0,
+            "span_end": 54,
+            "truncated": false,
+            "branch_ids": [
+              "repair"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_4693bd50abfb73afc570207c9128d68c",
+            "source": "email",
+            "source_id": "background-0142",
+            "occurred_at": "2025-11-12T00:00:00+00:00",
+            "text": "Invoice 142 for car parking at North Court was received.",
+            "span_start": 0,
+            "span_end": 56,
+            "truncated": false,
+            "branch_ids": [
+              "repair"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "id": "repair",
+            "intent": "Find car mechanic recommendation",
+            "queries": [
+              "car engine repair",
+              "garage mechanic"
+            ],
+            "filters": {},
+            "record_ids": [
+              "rec_d717d672c54dc394bc11e3ee44dd773e",
+              "rec_c2583f4ce907439bcc476874f6069320",
+              "rec_0935fb9d41b6d65892c167778c980787",
+              "rec_d05262488ec821f10fa36bdce5ae24c8",
+              "rec_53a8ccfc24591dc120f34ea262852391",
+              "rec_66b7b2354359f2a766f0a52092fb1ea7",
+              "rec_108a36f233de8997a99386f10269d1e1",
+              "rec_4693bd50abfb73afc570207c9128d68c"
+            ],
+            "status": "candidates_found",
+            "incomplete": false,
+            "error": null,
+            "answer_verified": false,
+            "remaining_candidates": 0
+          }
+        ],
+        "connections": [],
+        "evidence_sufficiency": "not_established",
+        "verification_required": [
+          "repair"
+        ],
+        "unresolved_requirements": [],
+        "diagnostics": {
+          "variant_drift_rejected": 0,
+          "branches": 1,
+          "unique_searches": 1,
+          "max_concurrency": 3,
+          "elapsed_ms": 12.56,
+          "text_characters": 483,
+          "text_budget": 16000,
+          "graph_truncated": false,
+          "timed_out": 0,
+          "graph_scope": "unfiltered branches only; at current time; at most 3 seeds and 12 edges per seed"
+        },
+        "next_steps": [
+          "Read cited evidence and check it answers each intent.",
+          "Resolve entities only from explicit source evidence.",
+          "Refine unresolved branches with discovered names, aliases or dates; use structured knowledge tools for beliefs and numeric aggregation."
+        ],
+        "warning": "Hermes authored this plan. Query variants and relation paths are leads, not identity merges or proof. Candidate availability does not establish answerability. Running calls may finish after the response deadline; global worker/queue bounds remain enforced."
+      }
+    },
+    {
+      "goal": "Where is my blue bicycle key?",
+      "branches": [
+        {
+          "id": "key",
+          "intent": "Locate key using English and Hindi",
+          "queries": [
+            "blue bicycle key",
+            "नीली साइकिल चाबी"
+          ]
+        }
+      ],
+      "expected": [
+        "hindi"
+      ],
+      "found": [
+        "hindi",
+        "recommend",
+        "background-0013",
+        "background-0058",
+        "background-0069",
+        "background-0074",
+        "background-0077",
+        "background-0101"
+      ],
+      "passed": true,
+      "result": {
+        "retrieval": "parallel_investigation",
+        "goal": "Where is my blue bicycle key?",
+        "episodes": [
+          {
+            "id": "rec_a88d3abd65430fb3c75a1b1588983bc2",
+            "source": "whatsapp",
+            "source_id": "hindi",
+            "occurred_at": "2025-05-01T12:00:00+00:00",
+            "text": "मेरी नीली साइकिल की चाबी रसोई की दराज में है।",
+            "span_start": 0,
+            "span_end": 45,
+            "truncated": false,
+            "branch_ids": [
+              "key"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_c24b06faed4d8e75ab37f7f0546fb134",
+            "source": "whatsapp",
+            "source_id": "recommend",
+            "occurred_at": "2023-07-01T12:00:00+00:00",
+            "text": "Mira Sen recommended Theo Park for bicycle repairs.",
+            "span_start": 0,
+            "span_end": 51,
+            "truncated": false,
+            "branch_ids": [
+              "key"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_eff5b3eda3a625cd856ec482867ee4e5",
+            "source": "email",
+            "source_id": "background-0013",
+            "occurred_at": "2025-01-14T00:00:00+00:00",
+            "text": "Reminder: review bicycle storage notes for the Elm Square meeting.",
+            "span_start": 0,
+            "span_end": 66,
+            "truncated": false,
+            "branch_ids": [
+              "key"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_5279f8a8a61e1bb51c9419edf0e20f29",
+            "source": "email",
+            "source_id": "background-0058",
+            "occurred_at": "2025-07-09T00:00:00+00:00",
+            "text": "Invoice 58 for bicycle storage at North Court was received.",
+            "span_start": 0,
+            "span_end": 59,
+            "truncated": false,
+            "branch_ids": [
+              "key"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_8979a88697a189ba86fdfe7dad19e59d",
+            "source": "whatsapp",
+            "source_id": "background-0069",
+            "occurred_at": "2026-01-09T00:00:00+00:00",
+            "text": "Reminder: review bicycle storage notes for the Maple Park meeting.",
+            "span_start": 0,
+            "span_end": 66,
+            "truncated": false,
+            "branch_ids": [
+              "key"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_ac832bd2aac4ae053bb91b0dc553c502",
+            "source": "health",
+            "source_id": "background-0074",
+            "occurred_at": "2025-02-12T00:00:00+00:00",
+            "text": "Reminder: review bicycle storage notes for the Elm Square meeting.",
+            "span_start": 0,
+            "span_end": 66,
+            "truncated": false,
+            "branch_ids": [
+              "key"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_f1c3495f30d1b02801bd433ac2b41c0f",
+            "source": "health",
+            "source_id": "background-0077",
+            "occurred_at": "2024-10-03T00:00:00+00:00",
+            "text": "Invoice 77 for bicycle storage at Maple Park was received.",
+            "span_start": 0,
+            "span_end": 58,
+            "truncated": false,
+            "branch_ids": [
+              "key"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_0dc7ec90327c9c5e4816b690b4de84ee",
+            "source": "health",
+            "source_id": "background-0101",
+            "occurred_at": "2025-03-08T00:00:00+00:00",
+            "text": "Invoice 101 for bicycle storage at Maple Park was received.",
+            "span_start": 0,
+            "span_end": 59,
+            "truncated": false,
+            "branch_ids": [
+              "key"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "id": "key",
+            "intent": "Locate key using English and Hindi",
+            "queries": [
+              "blue bicycle key",
+              "नीली साइकिल चाबी"
+            ],
+            "filters": {},
+            "record_ids": [
+              "rec_a88d3abd65430fb3c75a1b1588983bc2",
+              "rec_c24b06faed4d8e75ab37f7f0546fb134",
+              "rec_eff5b3eda3a625cd856ec482867ee4e5",
+              "rec_5279f8a8a61e1bb51c9419edf0e20f29",
+              "rec_8979a88697a189ba86fdfe7dad19e59d",
+              "rec_ac832bd2aac4ae053bb91b0dc553c502",
+              "rec_f1c3495f30d1b02801bd433ac2b41c0f",
+              "rec_0dc7ec90327c9c5e4816b690b4de84ee"
+            ],
+            "status": "candidates_found",
+            "incomplete": false,
+            "error": null,
+            "answer_verified": false,
+            "remaining_candidates": 0
+          }
+        ],
+        "connections": [],
+        "evidence_sufficiency": "not_established",
+        "verification_required": [
+          "key"
+        ],
+        "unresolved_requirements": [],
+        "diagnostics": {
+          "variant_drift_rejected": 0,
+          "branches": 1,
+          "unique_searches": 1,
+          "max_concurrency": 3,
+          "elapsed_ms": 11.0,
+          "text_characters": 470,
+          "text_budget": 16000,
+          "graph_truncated": false,
+          "timed_out": 0,
+          "graph_scope": "unfiltered branches only; at current time; at most 3 seeds and 12 edges per seed"
+        },
+        "next_steps": [
+          "Read cited evidence and check it answers each intent.",
+          "Resolve entities only from explicit source evidence.",
+          "Refine unresolved branches with discovered names, aliases or dates; use structured knowledge tools for beliefs and numeric aggregation."
+        ],
+        "warning": "Hermes authored this plan. Query variants and relation paths are leads, not identity merges or proof. Candidate availability does not establish answerability. Running calls may finish after the response deadline; global worker/queue bounds remain enforced."
+      }
+    },
+    {
+      "goal": "Where was my office in 2023 and where is it now?",
+      "branches": [
+        {
+          "id": "past",
+          "intent": "Office in 2023",
+          "queries": [
+            "office address"
+          ],
+          "filters": {
+            "after": "2023-01-01T00:00:00Z",
+            "before": "2024-01-01T00:00:00Z"
+          }
+        },
+        {
+          "id": "current",
+          "intent": "Office after move",
+          "queries": [
+            "office address correction"
+          ],
+          "filters": {
+            "after": "2025-01-01T00:00:00Z"
+          }
+        }
+      ],
+      "expected": [
+        "old-address",
+        "new-address"
+      ],
+      "found": [
+        "old-address",
+        "new-address",
+        "background-0022",
+        "background-0003",
+        "background-0095",
+        "background-0046",
+        "background-0237",
+        "background-0084",
+        "background-0255",
+        "background-0108",
+        "background-0329",
+        "background-0132",
+        "background-0426",
+        "background-0136",
+        "background-0502",
+        "background-0145"
+      ],
+      "passed": true,
+      "result": {
+        "retrieval": "parallel_investigation",
+        "goal": "Where was my office in 2023 and where is it now?",
+        "episodes": [
+          {
+            "id": "rec_6da58a362e6e27c77aa9abb9ca14e7d0",
+            "source": "email",
+            "source_id": "old-address",
+            "occurred_at": "2023-01-01T12:00:00+00:00",
+            "text": "My office address is 14 Market Street.",
+            "span_start": 0,
+            "span_end": 38,
+            "truncated": false,
+            "branch_ids": [
+              "past"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_c08e74948f27ef6ccf75150c21411d40",
+            "source": "email",
+            "source_id": "new-address",
+            "occurred_at": "2025-01-01T12:00:00+00:00",
+            "text": "Correction: from January 2025 my office address is 91 River Road.",
+            "span_start": 0,
+            "span_end": 65,
+            "truncated": false,
+            "branch_ids": [
+              "current"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_4a91c24b66140fffca6e6e9cac13c98f",
+            "source": "email",
+            "source_id": "background-0022",
+            "occurred_at": "2023-10-10T00:00:00+00:00",
+            "text": "Invoice 22 for office cleaning at Harbour Hall was received.",
+            "span_start": 0,
+            "span_end": 60,
+            "truncated": false,
+            "branch_ids": [
+              "past"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_9a47e379132af938aecafb684e61bf9d",
+            "source": "whatsapp",
+            "source_id": "background-0003",
+            "occurred_at": "2026-08-22T00:00:00+00:00",
+            "text": "Invoice 3 for office cleaning at Elm Square was received.",
+            "span_start": 0,
+            "span_end": 57,
+            "truncated": false,
+            "branch_ids": [
+              "current"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_4802b049e348d96617e977e24f865a16",
+            "source": "health",
+            "source_id": "background-0095",
+            "occurred_at": "2023-11-21T00:00:00+00:00",
+            "text": "Invoice 95 for office cleaning at Maple Park was received.",
+            "span_start": 0,
+            "span_end": 58,
+            "truncated": false,
+            "branch_ids": [
+              "past"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_9424dc1958ac88d86cc56a318d697a3e",
+            "source": "email",
+            "source_id": "background-0046",
+            "occurred_at": "2026-07-03T00:00:00+00:00",
+            "text": "Invoice 46 for office cleaning at North Court was received.",
+            "span_start": 0,
+            "span_end": 59,
+            "truncated": false,
+            "branch_ids": [
+              "current"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_697d88ea43988ea10e533d009a9cfe54",
+            "source": "whatsapp",
+            "source_id": "background-0237",
+            "occurred_at": "2023-12-01T00:00:00+00:00",
+            "text": "Reminder: review office cleaning notes for the Maple Park meeting.",
+            "span_start": 0,
+            "span_end": 66,
+            "truncated": false,
+            "branch_ids": [
+              "past"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_d62392cb1b028ce564cfab3504858504",
+            "source": "whatsapp",
+            "source_id": "background-0084",
+            "occurred_at": "2025-01-04T00:00:00+00:00",
+            "text": "Reminder: review office cleaning notes for the Elm Square meeting.",
+            "span_start": 0,
+            "span_end": 66,
+            "truncated": false,
+            "branch_ids": [
+              "current"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_8b1a5f9d161186a12eef3f208da6ecf9",
+            "source": "whatsapp",
+            "source_id": "background-0255",
+            "occurred_at": "2023-05-08T00:00:00+00:00",
+            "text": "Invoice 255 for office cleaning at Harbour Hall was received.",
+            "span_start": 0,
+            "span_end": 61,
+            "truncated": false,
+            "branch_ids": [
+              "past"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_430fba79813cb4b67fd0a7b41d09d183",
+            "source": "whatsapp",
+            "source_id": "background-0108",
+            "occurred_at": "2025-09-19T00:00:00+00:00",
+            "text": "Reminder: review office cleaning notes for the Elm Square meeting.",
+            "span_start": 0,
+            "span_end": 66,
+            "truncated": false,
+            "branch_ids": [
+              "current"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_87a2916d7af27d78019329cb9dbb1150",
+            "source": "health",
+            "source_id": "background-0329",
+            "occurred_at": "2023-12-01T00:00:00+00:00",
+            "text": "Reminder: review office cleaning notes for the North Court meeting.",
+            "span_start": 0,
+            "span_end": 67,
+            "truncated": false,
+            "branch_ids": [
+              "past"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_6fa2019267e785fa62cde91d291dd239",
+            "source": "whatsapp",
+            "source_id": "background-0132",
+            "occurred_at": "2025-05-17T00:00:00+00:00",
+            "text": "Reminder: review office cleaning notes for the Maple Park meeting.",
+            "span_start": 0,
+            "span_end": 66,
+            "truncated": false,
+            "branch_ids": [
+              "current"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_2298d16b40a29082c473d9b13ba88ad4",
+            "source": "whatsapp",
+            "source_id": "background-0426",
+            "occurred_at": "2023-03-09T00:00:00+00:00",
+            "text": "Invoice 426 for office cleaning at Maple Park was received.",
+            "span_start": 0,
+            "span_end": 59,
+            "truncated": false,
+            "branch_ids": [
+              "past"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_20bce37b663113347664837ad34f9f1a",
+            "source": "email",
+            "source_id": "background-0136",
+            "occurred_at": "2025-11-09T00:00:00+00:00",
+            "text": "Invoice 136 for office cleaning at Elm Square was received.",
+            "span_start": 0,
+            "span_end": 59,
+            "truncated": false,
+            "branch_ids": [
+              "current"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_bb7eeb504b555ab8c81ed4486e465743",
+            "source": "email",
+            "source_id": "background-0502",
+            "occurred_at": "2023-10-11T00:00:00+00:00",
+            "text": "Invoice 502 for office cleaning at Maple Park was received.",
+            "span_start": 0,
+            "span_end": 59,
+            "truncated": false,
+            "branch_ids": [
+              "past"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_74d33243c28d4e4c46dff2c8e6735b76",
+            "source": "email",
+            "source_id": "background-0145",
+            "occurred_at": "2025-11-24T00:00:00+00:00",
+            "text": "Reminder: review office cleaning notes for the North Court meeting.",
+            "span_start": 0,
+            "span_end": 67,
+            "truncated": false,
+            "branch_ids": [
+              "current"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "id": "past",
+            "intent": "Office in 2023",
+            "queries": [
+              "office address"
+            ],
+            "filters": {
+              "after": "2023-01-01T00:00:00+00:00",
+              "before": "2024-01-01T00:00:00+00:00"
+            },
+            "record_ids": [
+              "rec_6da58a362e6e27c77aa9abb9ca14e7d0",
+              "rec_4a91c24b66140fffca6e6e9cac13c98f",
+              "rec_4802b049e348d96617e977e24f865a16",
+              "rec_697d88ea43988ea10e533d009a9cfe54",
+              "rec_8b1a5f9d161186a12eef3f208da6ecf9",
+              "rec_87a2916d7af27d78019329cb9dbb1150",
+              "rec_2298d16b40a29082c473d9b13ba88ad4",
+              "rec_bb7eeb504b555ab8c81ed4486e465743"
+            ],
+            "status": "candidates_found",
+            "incomplete": false,
+            "error": null,
+            "answer_verified": false,
+            "remaining_candidates": 0
+          },
+          {
+            "id": "current",
+            "intent": "Office after move",
+            "queries": [
+              "office address correction"
+            ],
+            "filters": {
+              "after": "2025-01-01T00:00:00+00:00"
+            },
+            "record_ids": [
+              "rec_c08e74948f27ef6ccf75150c21411d40",
+              "rec_9a47e379132af938aecafb684e61bf9d",
+              "rec_9424dc1958ac88d86cc56a318d697a3e",
+              "rec_d62392cb1b028ce564cfab3504858504",
+              "rec_430fba79813cb4b67fd0a7b41d09d183",
+              "rec_6fa2019267e785fa62cde91d291dd239",
+              "rec_20bce37b663113347664837ad34f9f1a",
+              "rec_74d33243c28d4e4c46dff2c8e6735b76"
+            ],
+            "status": "candidates_found",
+            "incomplete": false,
+            "error": null,
+            "answer_verified": false,
+            "remaining_candidates": 0
+          }
+        ],
+        "connections": [],
+        "evidence_sufficiency": "not_established",
+        "verification_required": [
+          "past",
+          "current"
+        ],
+        "unresolved_requirements": [],
+        "diagnostics": {
+          "variant_drift_rejected": 0,
+          "branches": 2,
+          "unique_searches": 2,
+          "max_concurrency": 3,
+          "elapsed_ms": 14.88,
+          "text_characters": 973,
+          "text_budget": 16000,
+          "graph_truncated": false,
+          "timed_out": 0,
+          "graph_scope": "unfiltered branches only; at current time; at most 3 seeds and 12 edges per seed"
+        },
+        "next_steps": [
+          "Read cited evidence and check it answers each intent.",
+          "Resolve entities only from explicit source evidence.",
+          "Refine unresolved branches with discovered names, aliases or dates; use structured knowledge tools for beliefs and numeric aggregation."
+        ],
+        "warning": "Hermes authored this plan. Query variants and relation paths are leads, not identity merges or proof. Candidate availability does not establish answerability. Running calls may finish after the response deadline; global worker/queue bounds remain enforced."
+      }
+    },
+    {
+      "goal": "Who offered bicycle repairs in the group and who recommended them?",
+      "branches": [
+        {
+          "id": "group",
+          "intent": "Group repair offer",
+          "queries": [
+            "bicycle brakes Cedar Cycles"
+          ]
+        },
+        {
+          "id": "recommendation",
+          "intent": "Personal recommendation",
+          "queries": [
+            "Mira Theo recommended"
+          ]
+        }
+      ],
+      "expected": [
+        "group-unknown",
+        "recommend"
+      ],
+      "found": [
+        "group-unknown",
+        "recommend",
+        "identity",
+        "garage",
+        "school",
+        "background-0013",
+        "same-name",
+        "background-0058",
+        "mass-other",
+        "background-0069",
+        "background-0074",
+        "hinglish",
+        "background-0077"
+      ],
+      "passed": true,
+      "result": {
+        "retrieval": "parallel_investigation",
+        "goal": "Who offered bicycle repairs in the group and who recommended them?",
+        "episodes": [
+          {
+            "id": "rec_c2583f4ce907439bcc476874f6069320",
+            "source": "whatsapp",
+            "source_id": "group-unknown",
+            "occurred_at": "2021-06-01T12:00:00+00:00",
+            "text": "I can repair bicycle brakes. Ask for Theo at Cedar Cycles.",
+            "span_start": 0,
+            "span_end": 58,
+            "truncated": false,
+            "branch_ids": [
+              "group",
+              "recommendation"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_c24b06faed4d8e75ab37f7f0546fb134",
+            "source": "whatsapp",
+            "source_id": "recommend",
+            "occurred_at": "2023-07-01T12:00:00+00:00",
+            "text": "Mira Sen recommended Theo Park for bicycle repairs.",
+            "span_start": 0,
+            "span_end": 51,
+            "truncated": false,
+            "branch_ids": [
+              "recommendation",
+              "group"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_2ef097fd3198467e9b756fd42859ade9",
+            "source": "whatsapp",
+            "source_id": "identity",
+            "occurred_at": "2023-06-01T12:00:00+00:00",
+            "text": "I am Theo Park from Cedar Cycles, the person who offered brake repairs in the group. I used this number from 2021 until 2024.",
+            "span_start": 0,
+            "span_end": 125,
+            "truncated": false,
+            "branch_ids": [
+              "group",
+              "recommendation"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_d717d672c54dc394bc11e3ee44dd773e",
+            "source": "whatsapp",
+            "source_id": "garage",
+            "occurred_at": "2022-02-02T12:00:00+00:00",
+            "text": "Mira recommended Copper Finch Garage. The mechanic repaired my car engine there.",
+            "span_start": 0,
+            "span_end": 80,
+            "truncated": false,
+            "branch_ids": [
+              "recommendation"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_551befa567b17b140e94b88097689502",
+            "source": "whatsapp",
+            "source_id": "school",
+            "occurred_at": "2022-05-01T12:00:00+00:00",
+            "text": "Mira Sen and I attended Willow School. Mira is an architect.",
+            "span_start": 0,
+            "span_end": 60,
+            "truncated": false,
+            "branch_ids": [
+              "recommendation"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_eff5b3eda3a625cd856ec482867ee4e5",
+            "source": "email",
+            "source_id": "background-0013",
+            "occurred_at": "2025-01-14T00:00:00+00:00",
+            "text": "Reminder: review bicycle storage notes for the Elm Square meeting.",
+            "span_start": 0,
+            "span_end": 66,
+            "truncated": false,
+            "branch_ids": [
+              "group"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_23c2fa01f34466e6adf765aa4a56e2bc",
+            "source": "email",
+            "source_id": "same-name",
+            "occurred_at": "2024-06-01T12:00:00+00:00",
+            "text": "Mira Das is an accountant at Amber Ledger. She is not Mira Sen.",
+            "span_start": 0,
+            "span_end": 63,
+            "truncated": false,
+            "branch_ids": [
+              "recommendation"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_5279f8a8a61e1bb51c9419edf0e20f29",
+            "source": "email",
+            "source_id": "background-0058",
+            "occurred_at": "2025-07-09T00:00:00+00:00",
+            "text": "Invoice 58 for bicycle storage at North Court was received.",
+            "span_start": 0,
+            "span_end": 59,
+            "truncated": false,
+            "branch_ids": [
+              "group"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_2de1312d5330ab380a51fb725b2a5aca",
+            "source": "health",
+            "source_id": "mass-other",
+            "occurred_at": "2026-08-02T08:00:00+00:00",
+            "text": "Theo body mass measurement: 90 kg on 2026-08-02.",
+            "span_start": 0,
+            "span_end": 48,
+            "truncated": false,
+            "branch_ids": [
+              "recommendation"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_8979a88697a189ba86fdfe7dad19e59d",
+            "source": "whatsapp",
+            "source_id": "background-0069",
+            "occurred_at": "2026-01-09T00:00:00+00:00",
+            "text": "Reminder: review bicycle storage notes for the Maple Park meeting.",
+            "span_start": 0,
+            "span_end": 66,
+            "truncated": false,
+            "branch_ids": [
+              "group"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_ac832bd2aac4ae053bb91b0dc553c502",
+            "source": "health",
+            "source_id": "background-0074",
+            "occurred_at": "2025-02-12T00:00:00+00:00",
+            "text": "Reminder: review bicycle storage notes for the Elm Square meeting.",
+            "span_start": 0,
+            "span_end": 66,
+            "truncated": false,
+            "branch_ids": [
+              "group"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_113c9619903267a5bd061cde99e36f2e",
+            "source": "whatsapp",
+            "source_id": "hinglish",
+            "occurred_at": "2025-06-01T12:00:00+00:00",
+            "text": "Mira ne bola: kal subah saat baje station par milna, Jaipur train ke liye.",
+            "span_start": 0,
+            "span_end": 74,
+            "truncated": false,
+            "branch_ids": [
+              "recommendation"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_f1c3495f30d1b02801bd433ac2b41c0f",
+            "source": "health",
+            "source_id": "background-0077",
+            "occurred_at": "2024-10-03T00:00:00+00:00",
+            "text": "Invoice 77 for bicycle storage at Maple Park was received.",
+            "span_start": 0,
+            "span_end": 58,
+            "truncated": false,
+            "branch_ids": [
+              "group"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "id": "group",
+            "intent": "Group repair offer",
+            "queries": [
+              "bicycle brakes Cedar Cycles"
+            ],
+            "filters": {},
+            "record_ids": [
+              "rec_c2583f4ce907439bcc476874f6069320",
+              "rec_2ef097fd3198467e9b756fd42859ade9",
+              "rec_c24b06faed4d8e75ab37f7f0546fb134",
+              "rec_eff5b3eda3a625cd856ec482867ee4e5",
+              "rec_5279f8a8a61e1bb51c9419edf0e20f29",
+              "rec_8979a88697a189ba86fdfe7dad19e59d",
+              "rec_ac832bd2aac4ae053bb91b0dc553c502",
+              "rec_f1c3495f30d1b02801bd433ac2b41c0f"
+            ],
+            "status": "candidates_found",
+            "incomplete": false,
+            "error": null,
+            "answer_verified": false,
+            "remaining_candidates": 0
+          },
+          {
+            "id": "recommendation",
+            "intent": "Personal recommendation",
+            "queries": [
+              "Mira Theo recommended"
+            ],
+            "filters": {},
+            "record_ids": [
+              "rec_c24b06faed4d8e75ab37f7f0546fb134",
+              "rec_d717d672c54dc394bc11e3ee44dd773e",
+              "rec_551befa567b17b140e94b88097689502",
+              "rec_23c2fa01f34466e6adf765aa4a56e2bc",
+              "rec_2de1312d5330ab380a51fb725b2a5aca",
+              "rec_c2583f4ce907439bcc476874f6069320",
+              "rec_113c9619903267a5bd061cde99e36f2e",
+              "rec_2ef097fd3198467e9b756fd42859ade9"
+            ],
+            "status": "candidates_found",
+            "incomplete": false,
+            "error": null,
+            "answer_verified": false,
+            "remaining_candidates": 0
+          }
+        ],
+        "connections": [],
+        "evidence_sufficiency": "not_established",
+        "verification_required": [
+          "group",
+          "recommendation"
+        ],
+        "unresolved_requirements": [],
+        "diagnostics": {
+          "variant_drift_rejected": 0,
+          "branches": 2,
+          "unique_searches": 2,
+          "max_concurrency": 3,
+          "elapsed_ms": 11.62,
+          "text_characters": 874,
+          "text_budget": 16000,
+          "graph_truncated": false,
+          "timed_out": 0,
+          "graph_scope": "unfiltered branches only; at current time; at most 3 seeds and 12 edges per seed"
+        },
+        "next_steps": [
+          "Read cited evidence and check it answers each intent.",
+          "Resolve entities only from explicit source evidence.",
+          "Refine unresolved branches with discovered names, aliases or dates; use structured knowledge tools for beliefs and numeric aggregation."
+        ],
+        "warning": "Hermes authored this plan. Query variants and relation paths are leads, not identity merges or proof. Candidate availability does not establish answerability. Running calls may finish after the response deadline; global worker/queue bounds remain enforced."
+      }
+    },
+    {
+      "goal": "Where is my travel document and how do I restore home internet?",
+      "branches": [
+        {
+          "id": "document",
+          "intent": "Passport location",
+          "queries": [
+            "passport folder cupboard"
+          ]
+        },
+        {
+          "id": "internet",
+          "intent": "Router recovery instructions",
+          "queries": [
+            "router wireless power"
+          ]
+        }
+      ],
+      "expected": [
+        "passport",
+        "wifi"
+      ],
+      "found": [
+        "passport",
+        "wifi",
+        "procedure"
+      ],
+      "passed": true,
+      "result": {
+        "retrieval": "parallel_investigation",
+        "goal": "Where is my travel document and how do I restore home internet?",
+        "episodes": [
+          {
+            "id": "rec_ee85b8d355c76c153063e1baa6d22ee2",
+            "source": "email",
+            "source_id": "passport",
+            "occurred_at": "2024-04-04T12:00:00+00:00",
+            "text": "My passport is inside the violet folder in the bedroom cupboard.",
+            "span_start": 0,
+            "span_end": 64,
+            "truncated": false,
+            "branch_ids": [
+              "document"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_7fded42d0d496c177307a3ee38c76d05",
+            "source": "email",
+            "source_id": "wifi",
+            "occurred_at": "2024-02-04T12:00:00+00:00",
+            "text": "To restore home wireless internet: unplug the router, wait thirty seconds, then reconnect power.",
+            "span_start": 0,
+            "span_end": 96,
+            "truncated": false,
+            "branch_ids": [
+              "internet"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          },
+          {
+            "id": "rec_c6d90bc58b202f73cba5712ef7b98388",
+            "source": "email",
+            "source_id": "procedure",
+            "occurred_at": "2025-08-01T12:00:00+00:00",
+            "text": "The router restart succeeded after waiting thirty seconds before reconnecting power.",
+            "span_start": 0,
+            "span_end": 84,
+            "truncated": false,
+            "branch_ids": [
+              "internet"
+            ],
+            "duplicate_record_ids": [],
+            "relevance": {
+              "accepted": true,
+              "lexical_anchors": true,
+              "semantic_similarity": null,
+              "semantic_minimum": 0.5,
+              "method": "content_anchors_or_semantic_floor",
+              "answer_verified": false
+            }
+          }
+        ],
+        "requirements": [
+          {
+            "id": "document",
+            "intent": "Passport location",
+            "queries": [
+              "passport folder cupboard"
+            ],
+            "filters": {},
+            "record_ids": [
+              "rec_ee85b8d355c76c153063e1baa6d22ee2"
+            ],
+            "status": "candidates_found",
+            "incomplete": false,
+            "error": null,
+            "answer_verified": false,
+            "remaining_candidates": 0
+          },
+          {
+            "id": "internet",
+            "intent": "Router recovery instructions",
+            "queries": [
+              "router wireless power"
+            ],
+            "filters": {},
+            "record_ids": [
+              "rec_7fded42d0d496c177307a3ee38c76d05",
+              "rec_c6d90bc58b202f73cba5712ef7b98388"
+            ],
+            "status": "candidates_found",
+            "incomplete": false,
+            "error": null,
+            "answer_verified": false,
+            "remaining_candidates": 0
+          }
+        ],
+        "connections": [],
+        "evidence_sufficiency": "not_established",
+        "verification_required": [
+          "document",
+          "internet"
+        ],
+        "unresolved_requirements": [],
+        "diagnostics": {
+          "variant_drift_rejected": 0,
+          "branches": 2,
+          "unique_searches": 2,
+          "max_concurrency": 3,
+          "elapsed_ms": 10.28,
+          "text_characters": 244,
+          "text_budget": 16000,
+          "graph_truncated": false,
+          "timed_out": 0,
+          "graph_scope": "unfiltered branches only; at current time; at most 3 seeds and 12 edges per seed"
+        },
+        "next_steps": [
+          "Read cited evidence and check it answers each intent.",
+          "Resolve entities only from explicit source evidence.",
+          "Refine unresolved branches with discovered names, aliases or dates; use structured knowledge tools for beliefs and numeric aggregation."
+        ],
+        "warning": "Hermes authored this plan. Query variants and relation paths are leads, not identity merges or proof. Candidate availability does not establish answerability. Running calls may finish after the response deadline; global worker/queue bounds remain enforced."
+      }
+    },
+    {
+      "goal": "What is my blood type?",
+      "branches": [
+        {
+          "id": "blood",
+          "intent": "Explicit blood group record",
+          "queries": [
+            "blood type",
+            "ABO blood group"
+          ]
+        }
+      ],
+      "expected": [],
+      "found": [],
+      "passed": true,
+      "result": {
+        "retrieval": "parallel_investigation",
+        "goal": "What is my blood type?",
+        "episodes": [],
+        "requirements": [
+          {
+            "id": "blood",
+            "intent": "Explicit blood group record",
+            "queries": [
+              "blood type",
+              "ABO blood group"
+            ],
+            "filters": {},
+            "record_ids": [],
+            "status": "no_evidence_in_context",
+            "incomplete": false,
+            "error": null,
+            "answer_verified": false,
+            "remaining_candidates": 0
+          }
+        ],
+        "connections": [],
+        "evidence_sufficiency": "not_established",
+        "verification_required": [
+          "blood"
+        ],
+        "unresolved_requirements": [
+          "blood"
+        ],
+        "diagnostics": {
+          "variant_drift_rejected": 8,
+          "branches": 1,
+          "unique_searches": 1,
+          "max_concurrency": 3,
+          "elapsed_ms": 10.62,
+          "text_characters": 0,
+          "text_budget": 16000,
+          "graph_truncated": false,
+          "timed_out": 0,
+          "graph_scope": "unfiltered branches only; at current time; at most 3 seeds and 12 edges per seed"
+        },
+        "next_steps": [
+          "Read cited evidence and check it answers each intent.",
+          "Resolve entities only from explicit source evidence.",
+          "Refine unresolved branches with discovered names, aliases or dates; use structured knowledge tools for beliefs and numeric aggregation."
+        ],
+        "warning": "Hermes authored this plan. Query variants and relation paths are leads, not identity merges or proof. Candidate availability does not establish answerability. Running calls may finish after the response deadline; global worker/queue bounds remain enforced."
+      }
+    }
+  ]
+}

@@ -1,0 +1,1191 @@
+{
+  "dataset": "personal-archive-v1",
+  "seed": 8162026,
+  "records": 1226,
+  "archive_sha256": "e3a4bb0680ec3f10b628e79a7160c2e621e5523b369199ef74d30f30349be092",
+  "scope": "Fictional synthetic sources. No real LLM. Structured facts and identity confirmations supplied by the harness, not automatically inferred.",
+  "retrieval": {
+    "lexical": {
+      "queries": 24,
+      "single_source_queries": 23,
+      "single_source_at_1": 15,
+      "all_evidence_at_5": 20,
+      "median_ms": 8.42,
+      "cases": [
+        {
+          "id": "1",
+          "query": "Who fixed my automobile?",
+          "expected": [
+            "garage"
+          ],
+          "filters": {},
+          "retrieved": [
+            "old-address",
+            "passport",
+            "new-address",
+            "book",
+            "garage"
+          ],
+          "ranks": {
+            "garage": 5
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 10.53
+        },
+        {
+          "id": "2",
+          "query": "मेरी गाड़ी का इंजन किसने ठीक किया था?",
+          "expected": [
+            "garage"
+          ],
+          "filters": {},
+          "retrieved": [
+            "hindi"
+          ],
+          "ranks": {
+            "garage": null
+          },
+          "all_evidence_at_5": false,
+          "elapsed_ms": 12.16
+        },
+        {
+          "id": "3",
+          "query": "Gaadi repair karane ke liye Mira ne kaunsi jagah batayi thi?",
+          "expected": [
+            "garage"
+          ],
+          "filters": {},
+          "retrieved": [
+            "hinglish",
+            "school",
+            "same-name",
+            "group-unknown",
+            "recommend"
+          ],
+          "ranks": {
+            "garage": null
+          },
+          "all_evidence_at_5": false,
+          "elapsed_ms": 6.71
+        },
+        {
+          "id": "4",
+          "query": "Where did I put my travel identity document?",
+          "expected": [
+            "passport"
+          ],
+          "filters": {},
+          "retrieved": [
+            "food",
+            "old-address",
+            "rest",
+            "passport",
+            "new-address"
+          ],
+          "ranks": {
+            "passport": 4
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 6.81
+        },
+        {
+          "id": "5",
+          "query": "मेरा पासपोर्ट कहाँ रखा है?",
+          "expected": [
+            "passport"
+          ],
+          "filters": {},
+          "retrieved": [
+            "hindi"
+          ],
+          "ranks": {
+            "passport": null
+          },
+          "all_evidence_at_5": false,
+          "elapsed_ms": 6.26
+        },
+        {
+          "id": "6",
+          "query": "How do I restart the internet equipment at home?",
+          "expected": [
+            "wifi"
+          ],
+          "filters": {},
+          "retrieved": [
+            "wifi",
+            "food",
+            "procedure",
+            "rest",
+            "identity"
+          ],
+          "ranks": {
+            "wifi": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 10.05
+        },
+        {
+          "id": "7",
+          "query": "Where was my office in 2023?",
+          "expected": [
+            "old-address"
+          ],
+          "filters": {
+            "after": "2023-01-01T00:00:00Z",
+            "before": "2024-01-01T00:00:00Z"
+          },
+          "retrieved": [
+            "old-address",
+            "identity",
+            "background-0022",
+            "background-0095",
+            "background-0255"
+          ],
+          "ranks": {
+            "old-address": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 11.73
+        },
+        {
+          "id": "8",
+          "query": "Where is my office now?",
+          "expected": [
+            "new-address"
+          ],
+          "filters": {
+            "after": "2025-01-01T00:00:00Z"
+          },
+          "retrieved": [
+            "new-address",
+            "book",
+            "forget",
+            "background-0003",
+            "background-0046"
+          ],
+          "ranks": {
+            "new-address": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 9.95
+        },
+        {
+          "id": "9",
+          "query": "What food do I prefer for business dinners?",
+          "expected": [
+            "food"
+          ],
+          "filters": {},
+          "retrieved": [
+            "food",
+            "rest",
+            "identity",
+            "group-unknown",
+            "school"
+          ],
+          "ranks": {
+            "food": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 7.26
+        },
+        {
+          "id": "10",
+          "query": "When does the launch meeting start on September 15?",
+          "expected": [
+            "conflict-a",
+            "conflict-b"
+          ],
+          "filters": {},
+          "retrieved": [
+            "conflict-a",
+            "conflict-b",
+            "forget",
+            "background-0015",
+            "mass-a"
+          ],
+          "ranks": {
+            "conflict-a": 1,
+            "conflict-b": 2
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 8.0
+        },
+        {
+          "id": "11",
+          "query": "Who designs buildings and went to school with me?",
+          "expected": [
+            "school"
+          ],
+          "filters": {},
+          "retrieved": [
+            "school",
+            "phone-new",
+            "rest",
+            "book",
+            "wifi"
+          ],
+          "ranks": {
+            "school": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 6.09
+        },
+        {
+          "id": "12",
+          "query": "Who in the group offered to fix bicycle brakes?",
+          "expected": [
+            "group-unknown"
+          ],
+          "filters": {},
+          "retrieved": [
+            "identity",
+            "phone-new",
+            "group-unknown",
+            "undated",
+            "passport"
+          ],
+          "ranks": {
+            "group-unknown": 3
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 8.53
+        },
+        {
+          "id": "13",
+          "query": "Who is Theo Park?",
+          "expected": [
+            "identity"
+          ],
+          "filters": {},
+          "retrieved": [
+            "identity",
+            "recommend",
+            "same-name",
+            "old-address",
+            "mass-other"
+          ],
+          "ranks": {
+            "identity": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 7.39
+        },
+        {
+          "id": "14",
+          "query": "Who owns the reassigned phone number?",
+          "expected": [
+            "phone-new"
+          ],
+          "filters": {},
+          "retrieved": [
+            "phone-new",
+            "identity",
+            "passport",
+            "task",
+            "conflict-a"
+          ],
+          "ranks": {
+            "phone-new": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 7.68
+        },
+        {
+          "id": "15",
+          "query": "Which Mira works with accounts?",
+          "expected": [
+            "same-name"
+          ],
+          "filters": {},
+          "retrieved": [
+            "school",
+            "same-name",
+            "recommend",
+            "garage",
+            "hinglish"
+          ],
+          "ranks": {
+            "same-name": 2
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 8.31
+        },
+        {
+          "id": "16",
+          "query": "Who did Mira recommend for bicycle repairs?",
+          "expected": [
+            "recommend"
+          ],
+          "filters": {},
+          "retrieved": [
+            "recommend",
+            "identity",
+            "school",
+            "same-name",
+            "garage"
+          ],
+          "ranks": {
+            "recommend": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 14.04
+        },
+        {
+          "id": "17",
+          "query": "What was my body mass on August 1?",
+          "expected": [
+            "mass-a"
+          ],
+          "filters": {
+            "source": "health",
+            "after": "2026-08-01T00:00:00Z",
+            "before": "2026-08-02T00:00:00Z"
+          },
+          "retrieved": [
+            "mass-a"
+          ],
+          "ranks": {
+            "mass-a": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 14.35
+        },
+        {
+          "id": "18",
+          "query": "How much rest did I get overnight?",
+          "expected": [
+            "rest"
+          ],
+          "filters": {
+            "source": "health"
+          },
+          "retrieved": [
+            "rest"
+          ],
+          "ranks": {
+            "rest": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 14.25
+        },
+        {
+          "id": "19",
+          "query": "Where is my blue bicycle key?",
+          "expected": [
+            "hindi"
+          ],
+          "filters": {},
+          "retrieved": [
+            "old-address",
+            "passport",
+            "new-address",
+            "same-name",
+            "book"
+          ],
+          "ranks": {
+            "hindi": null
+          },
+          "all_evidence_at_5": false,
+          "elapsed_ms": 9.5
+        },
+        {
+          "id": "20",
+          "query": "मेरी साइकिल की चाबी कहाँ है?",
+          "expected": [
+            "hindi"
+          ],
+          "filters": {},
+          "retrieved": [
+            "hindi"
+          ],
+          "ranks": {
+            "hindi": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 7.47
+        },
+        {
+          "id": "21",
+          "query": "Mira se Jaipur train ke liye kitne baje milna hai?",
+          "expected": [
+            "hinglish"
+          ],
+          "filters": {},
+          "retrieved": [
+            "hinglish",
+            "school",
+            "same-name",
+            "recommend",
+            "garage"
+          ],
+          "ranks": {
+            "hinglish": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 9.37
+        },
+        {
+          "id": "22",
+          "query": "Who has my astronomy book?",
+          "expected": [
+            "book"
+          ],
+          "filters": {},
+          "retrieved": [
+            "book",
+            "undated",
+            "old-address",
+            "passport",
+            "new-address"
+          ],
+          "ranks": {
+            "book": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 7.72
+        },
+        {
+          "id": "23",
+          "query": "What must happen before sending the expense report?",
+          "expected": [
+            "task"
+          ],
+          "filters": {},
+          "retrieved": [
+            "task",
+            "procedure",
+            "passport",
+            "conflict-a",
+            "conflict-b"
+          ],
+          "ranks": {
+            "task": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 8.21
+        },
+        {
+          "id": "24",
+          "query": "What made the router restart work?",
+          "expected": [
+            "procedure"
+          ],
+          "filters": {},
+          "retrieved": [
+            "procedure",
+            "wifi",
+            "passport",
+            "task",
+            "conflict-a"
+          ],
+          "ranks": {
+            "procedure": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 11.94
+        }
+      ],
+      "unsupported_queries": [
+        {
+          "query": "What is my submarine registration number?",
+          "candidate_count": 5,
+          "evidence_sufficiency": "not_established"
+        },
+        {
+          "query": "What is my blood type?",
+          "candidate_count": 5,
+          "evidence_sufficiency": "not_established"
+        },
+        {
+          "query": "What is my private helicopter tail number?",
+          "candidate_count": 5,
+          "evidence_sufficiency": "not_established"
+        }
+      ]
+    },
+    "multilingual_hybrid": {
+      "queries": 24,
+      "single_source_queries": 23,
+      "single_source_at_1": 16,
+      "all_evidence_at_5": 23,
+      "median_ms": 88.43,
+      "cases": [
+        {
+          "id": "1",
+          "query": "Who fixed my automobile?",
+          "expected": [
+            "garage"
+          ],
+          "filters": {},
+          "retrieved": [
+            "garage",
+            "identity",
+            "old-address",
+            "passport",
+            "new-address"
+          ],
+          "ranks": {
+            "garage": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 97.81
+        },
+        {
+          "id": "2",
+          "query": "मेरी गाड़ी का इंजन किसने ठीक किया था?",
+          "expected": [
+            "garage"
+          ],
+          "filters": {},
+          "retrieved": [
+            "hindi",
+            "garage",
+            "identity",
+            "background-0155",
+            "background-0196"
+          ],
+          "ranks": {
+            "garage": 2
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 91.83
+        },
+        {
+          "id": "3",
+          "query": "Gaadi repair karane ke liye Mira ne kaunsi jagah batayi thi?",
+          "expected": [
+            "garage"
+          ],
+          "filters": {},
+          "retrieved": [
+            "school",
+            "same-name",
+            "hinglish",
+            "garage",
+            "recommend"
+          ],
+          "ranks": {
+            "garage": 4
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 86.59
+        },
+        {
+          "id": "4",
+          "query": "Where did I put my travel identity document?",
+          "expected": [
+            "passport"
+          ],
+          "filters": {},
+          "retrieved": [
+            "passport",
+            "new-address",
+            "phone-new",
+            "food",
+            "old-address"
+          ],
+          "ranks": {
+            "passport": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 75.44
+        },
+        {
+          "id": "5",
+          "query": "मेरा पासपोर्ट कहाँ रखा है?",
+          "expected": [
+            "passport"
+          ],
+          "filters": {},
+          "retrieved": [
+            "hindi",
+            "passport",
+            "phone-new",
+            "new-address",
+            "background-0058"
+          ],
+          "ranks": {
+            "passport": 2
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 63.52
+        },
+        {
+          "id": "6",
+          "query": "How do I restart the internet equipment at home?",
+          "expected": [
+            "wifi"
+          ],
+          "filters": {},
+          "retrieved": [
+            "wifi",
+            "procedure",
+            "group-unknown",
+            "background-0574",
+            "background-0677"
+          ],
+          "ranks": {
+            "wifi": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 72.2
+        },
+        {
+          "id": "7",
+          "query": "Where was my office in 2023?",
+          "expected": [
+            "old-address"
+          ],
+          "filters": {
+            "after": "2023-01-01T00:00:00Z",
+            "before": "2024-01-01T00:00:00Z"
+          },
+          "retrieved": [
+            "background-0095",
+            "background-0255",
+            "old-address",
+            "background-0426",
+            "background-0022"
+          ],
+          "ranks": {
+            "old-address": 3
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 81.92
+        },
+        {
+          "id": "8",
+          "query": "Where is my office now?",
+          "expected": [
+            "new-address"
+          ],
+          "filters": {
+            "after": "2025-01-01T00:00:00Z"
+          },
+          "retrieved": [
+            "new-address",
+            "background-0003",
+            "background-0136",
+            "background-0231",
+            "background-0084"
+          ],
+          "ranks": {
+            "new-address": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 79.76
+        },
+        {
+          "id": "9",
+          "query": "What food do I prefer for business dinners?",
+          "expected": [
+            "food"
+          ],
+          "filters": {},
+          "retrieved": [
+            "food",
+            "background-0012",
+            "background-0021",
+            "background-0117",
+            "background-0075"
+          ],
+          "ranks": {
+            "food": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 101.28
+        },
+        {
+          "id": "10",
+          "query": "When does the launch meeting start on September 15?",
+          "expected": [
+            "conflict-a",
+            "conflict-b"
+          ],
+          "filters": {},
+          "retrieved": [
+            "conflict-a",
+            "conflict-b",
+            "background-0015",
+            "background-0061",
+            "background-0119"
+          ],
+          "ranks": {
+            "conflict-a": 1,
+            "conflict-b": 2
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 101.43
+        },
+        {
+          "id": "11",
+          "query": "Who designs buildings and went to school with me?",
+          "expected": [
+            "school"
+          ],
+          "filters": {},
+          "retrieved": [
+            "school",
+            "identity",
+            "background-0065",
+            "phone-new",
+            "rest"
+          ],
+          "ranks": {
+            "school": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 112.77
+        },
+        {
+          "id": "12",
+          "query": "Who in the group offered to fix bicycle brakes?",
+          "expected": [
+            "group-unknown"
+          ],
+          "filters": {},
+          "retrieved": [
+            "identity",
+            "group-unknown",
+            "background-0153",
+            "background-0221",
+            "background-0309"
+          ],
+          "ranks": {
+            "group-unknown": 2
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 123.96
+        },
+        {
+          "id": "13",
+          "query": "Who is Theo Park?",
+          "expected": [
+            "identity"
+          ],
+          "filters": {},
+          "retrieved": [
+            "recommend",
+            "background-0037",
+            "identity",
+            "background-0225",
+            "background-0050"
+          ],
+          "ranks": {
+            "identity": 3
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 90.55
+        },
+        {
+          "id": "14",
+          "query": "Who owns the reassigned phone number?",
+          "expected": [
+            "phone-new"
+          ],
+          "filters": {},
+          "retrieved": [
+            "phone-new",
+            "identity",
+            "passport",
+            "background-0677",
+            "task"
+          ],
+          "ranks": {
+            "phone-new": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 90.27
+        },
+        {
+          "id": "15",
+          "query": "Which Mira works with accounts?",
+          "expected": [
+            "same-name"
+          ],
+          "filters": {},
+          "retrieved": [
+            "same-name",
+            "school",
+            "background-0070",
+            "recommend",
+            "background-0089"
+          ],
+          "ranks": {
+            "same-name": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 66.54
+        },
+        {
+          "id": "16",
+          "query": "Who did Mira recommend for bicycle repairs?",
+          "expected": [
+            "recommend"
+          ],
+          "filters": {},
+          "retrieved": [
+            "recommend",
+            "school",
+            "garage",
+            "identity",
+            "background-0188"
+          ],
+          "ranks": {
+            "recommend": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 73.32
+        },
+        {
+          "id": "17",
+          "query": "What was my body mass on August 1?",
+          "expected": [
+            "mass-a"
+          ],
+          "filters": {
+            "source": "health",
+            "after": "2026-08-01T00:00:00Z",
+            "before": "2026-08-02T00:00:00Z"
+          },
+          "retrieved": [
+            "mass-a"
+          ],
+          "ranks": {
+            "mass-a": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 105.29
+        },
+        {
+          "id": "18",
+          "query": "How much rest did I get overnight?",
+          "expected": [
+            "rest"
+          ],
+          "filters": {
+            "source": "health"
+          },
+          "retrieved": [
+            "rest",
+            "background-0602",
+            "background-1031",
+            "background-0050",
+            "background-0335"
+          ],
+          "ranks": {
+            "rest": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 72.74
+        },
+        {
+          "id": "19",
+          "query": "Where is my blue bicycle key?",
+          "expected": [
+            "hindi"
+          ],
+          "filters": {},
+          "retrieved": [
+            "background-0077",
+            "background-0069",
+            "background-0146",
+            "background-0058",
+            "background-0539"
+          ],
+          "ranks": {
+            "hindi": null
+          },
+          "all_evidence_at_5": false,
+          "elapsed_ms": 75.51
+        },
+        {
+          "id": "20",
+          "query": "मेरी साइकिल की चाबी कहाँ है?",
+          "expected": [
+            "hindi"
+          ],
+          "filters": {},
+          "retrieved": [
+            "hindi",
+            "group-unknown",
+            "background-0069",
+            "background-0146",
+            "background-0251"
+          ],
+          "ranks": {
+            "hindi": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 97.33
+        },
+        {
+          "id": "21",
+          "query": "Mira se Jaipur train ke liye kitne baje milna hai?",
+          "expected": [
+            "hinglish"
+          ],
+          "filters": {},
+          "retrieved": [
+            "hinglish",
+            "background-0034",
+            "background-0130",
+            "background-0094",
+            "background-0111"
+          ],
+          "ranks": {
+            "hinglish": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 83.1
+        },
+        {
+          "id": "22",
+          "query": "Who has my astronomy book?",
+          "expected": [
+            "book"
+          ],
+          "filters": {},
+          "retrieved": [
+            "book",
+            "background-0037",
+            "background-0225",
+            "background-0252",
+            "background-0370"
+          ],
+          "ranks": {
+            "book": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 79.27
+        },
+        {
+          "id": "23",
+          "query": "What must happen before sending the expense report?",
+          "expected": [
+            "task"
+          ],
+          "filters": {},
+          "retrieved": [
+            "task",
+            "background-0055",
+            "background-0070",
+            "background-0029",
+            "background-0031"
+          ],
+          "ranks": {
+            "task": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 104.88
+        },
+        {
+          "id": "24",
+          "query": "What made the router restart work?",
+          "expected": [
+            "procedure"
+          ],
+          "filters": {},
+          "retrieved": [
+            "procedure",
+            "wifi",
+            "background-0007",
+            "background-0038",
+            "background-0114"
+          ],
+          "ranks": {
+            "procedure": 1
+          },
+          "all_evidence_at_5": true,
+          "elapsed_ms": 124.52
+        }
+      ],
+      "unsupported_queries": [
+        {
+          "query": "What is my submarine registration number?",
+          "candidate_count": 5,
+          "evidence_sufficiency": "not_established"
+        },
+        {
+          "query": "What is my blood type?",
+          "candidate_count": 5,
+          "evidence_sufficiency": "not_established"
+        },
+        {
+          "query": "What is my private helicopter tail number?",
+          "candidate_count": 5,
+          "evidence_sufficiency": "not_established"
+        }
+      ]
+    }
+  },
+  "checks": [
+    {
+      "name": "idempotent archive replay",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "missing mandatory provenance rejected",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "candidate identity does not expose group history",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "confirmed contact connects old group evidence",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "phone reuse separates owners",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "unknown dates not assigned through bounded ownership",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "overlapping confirmed phone ownership rejected",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "historical address preserved",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "current address excludes expired value",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "conflicting reports surfaced",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "explicit correction resolves conflict",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "contextual preference takes priority",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "fabricated evidence quote rejected",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "two-hop graph preserves sourced connections",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "health units normalize without mixing people",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "incompatible health unit rejected",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "task cannot bypass unfinished dependency",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "dependency completion unlocks task",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "stale task update rejected",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "procedural candidate passes executed fixture suite",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "proposer cannot self-promote",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "regressive lesson fails executed fixture suite",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "failed lesson cannot replace active procedure",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "bound procedure executes validated fixture",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "reviewed consolidation summary searchable",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "forget removes source search and derived summary",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "reimport cannot resurrect forgotten source",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "forget invalidates learned procedure",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "injection text remains data and leaves other evidence live",
+      "passed": true,
+      "detail": true
+    },
+    {
+      "name": "memory survives database reopen",
+      "passed": true,
+      "detail": true
+    }
+  ],
+  "embedding": {
+    "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "key": "b4f41e8cd7b1fb9ade0905f015c6c2a2c85f84159cbcaeb14005e02d644aca33",
+    "index": "hnsw",
+    "indexing_seconds": 114.982
+  },
+  "checks_passed": 30,
+  "checks_total": 30,
+  "limitations": [
+    "Curated retrieval questions are not a held-out statistical benchmark.",
+    "Structured facts, identity confirmation and graph edges are supplied explicitly, not extracted by a real LLM.",
+    "Learning/execution use deterministic fixture adapters; this does not measure real-world skill improvement.",
+    "Unsupported queries may return unrelated candidates; abstention is not calibrated.",
+    "No real LLM prompt-injection or answer-generation evaluation.",
+    "1,226 records do not qualify five years of full-volume production traffic."
+  ]
+}

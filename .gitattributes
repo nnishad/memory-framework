@@ -1,0 +1,2 @@
+# Patch payload whitespace is integrity-pinned and must remain byte-exact.
+*.patch whitespace=-trailing-space,-space-before-tab

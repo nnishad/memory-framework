@@ -1,0 +1,206 @@
+[
+  {
+    "id": "1",
+    "query": "Who fixed my automobile?",
+    "expected": [
+      "garage"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "2",
+    "query": "मेरी गाड़ी का इंजन किसने ठीक किया था?",
+    "expected": [
+      "garage"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "3",
+    "query": "Gaadi repair karane ke liye Mira ne kaunsi jagah batayi thi?",
+    "expected": [
+      "garage"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "4",
+    "query": "Where did I put my travel identity document?",
+    "expected": [
+      "passport"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "5",
+    "query": "मेरा पासपोर्ट कहाँ रखा है?",
+    "expected": [
+      "passport"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "6",
+    "query": "How do I restart the internet equipment at home?",
+    "expected": [
+      "wifi"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "7",
+    "query": "Where was my office in 2023?",
+    "expected": [
+      "old-address"
+    ],
+    "filters": {
+      "after": "2023-01-01T00:00:00Z",
+      "before": "2024-01-01T00:00:00Z"
+    }
+  },
+  {
+    "id": "8",
+    "query": "Where is my office now?",
+    "expected": [
+      "new-address"
+    ],
+    "filters": {
+      "after": "2025-01-01T00:00:00Z"
+    }
+  },
+  {
+    "id": "9",
+    "query": "What food do I prefer for business dinners?",
+    "expected": [
+      "food"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "10",
+    "query": "When does the launch meeting start on September 15?",
+    "expected": [
+      "conflict-a",
+      "conflict-b"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "11",
+    "query": "Who designs buildings and went to school with me?",
+    "expected": [
+      "school"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "12",
+    "query": "Who in the group offered to fix bicycle brakes?",
+    "expected": [
+      "group-unknown"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "13",
+    "query": "Who is Theo Park?",
+    "expected": [
+      "identity"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "14",
+    "query": "Who owns the reassigned phone number?",
+    "expected": [
+      "phone-new"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "15",
+    "query": "Which Mira works with accounts?",
+    "expected": [
+      "same-name"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "16",
+    "query": "Who did Mira recommend for bicycle repairs?",
+    "expected": [
+      "recommend"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "17",
+    "query": "What was my body mass on August 1?",
+    "expected": [
+      "mass-a"
+    ],
+    "filters": {
+      "source": "health",
+      "after": "2026-08-01T00:00:00Z",
+      "before": "2026-08-02T00:00:00Z"
+    }
+  },
+  {
+    "id": "18",
+    "query": "How much rest did I get overnight?",
+    "expected": [
+      "rest"
+    ],
+    "filters": {
+      "source": "health"
+    }
+  },
+  {
+    "id": "19",
+    "query": "Where is my blue bicycle key?",
+    "expected": [
+      "hindi"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "20",
+    "query": "मेरी साइकिल की चाबी कहाँ है?",
+    "expected": [
+      "hindi"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "21",
+    "query": "Mira se Jaipur train ke liye kitne baje milna hai?",
+    "expected": [
+      "hinglish"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "22",
+    "query": "Who has my astronomy book?",
+    "expected": [
+      "book"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "23",
+    "query": "What must happen before sending the expense report?",
+    "expected": [
+      "task"
+    ],
+    "filters": {}
+  },
+  {
+    "id": "24",
+    "query": "What made the router restart work?",
+    "expected": [
+      "procedure"
+    ],
+    "filters": {}
+  }
+]

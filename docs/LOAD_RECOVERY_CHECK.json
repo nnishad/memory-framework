@@ -1,0 +1,15 @@
+{
+  "records": 10000,
+  "concurrent_clients": 8,
+  "queries": 100,
+  "retrieval": "keyword only; synthetic exact-identifier questions",
+  "ingest_seconds": 3.91,
+  "query_p50_ms": 129.65,
+  "query_p95_ms": 175.99,
+  "query_max_ms": 229.6,
+  "acknowledged_records_survived_SIGKILL": true,
+  "encrypted_backup_and_isolated_restore_seconds": 0.77,
+  "archive_bytes": 15083559,
+  "production_certified": false,
+  "scope": "Ephemeral test host. Does not measure full-archive semantic indexing, personal-data recall, deployment hardware or host-loss recovery."
+}

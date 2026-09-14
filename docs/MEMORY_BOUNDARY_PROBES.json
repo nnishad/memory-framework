@@ -1,0 +1,35 @@
+{
+  "framework_version": "0.8.0rc8",
+  "scope": "Real HTTP service/outbox and pinned provider ABC; fictional data only.",
+  "global_forgetting_verified": false,
+  "observations": [
+    {
+      "id": "tracked_echo_after_source_forget",
+      "gap_reproduced": false,
+      "deleted_records": 3,
+      "scope": "Source exposed through provider search; no assertion about unattributed historical copies."
+    },
+    {
+      "id": "native_session_search_recaptured",
+      "gap_reproduced": false,
+      "scope": "Untracked native recall blocks generated recapture; federation remains missing."
+    },
+    {
+      "id": "untracked_checkpoint",
+      "fail_closed": true
+    },
+    {
+      "id": "default_platform_access",
+      "allowed": {
+        "cli": true,
+        "cron": true,
+        "tui": false,
+        "desktop": false,
+        "api": false,
+        "acp": false,
+        "subagent": false
+      },
+      "gap_remaining": "Authenticated local TUI/desktop host binding remains missing."
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "passed": true,
+  "version": "0.8.0rc8",
+  "patch_sha256": "e02aee222f013bbc019fd18da496d41e647a6ff29ec8f3abbc8b1110d3ee87f1",
+  "checks": [
+    {
+      "action": "check",
+      "state": "original",
+      "changed": false
+    },
+    {
+      "action": "apply",
+      "state": "patched",
+      "changed": true
+    },
+    {
+      "action": "apply",
+      "state": "patched",
+      "changed": false
+    },
+    {
+      "action": "rollback",
+      "state": "original",
+      "changed": true
+    },
+    {
+      "action": "rollback",
+      "state": "original",
+      "changed": false
+    },
+    {
+      "local_edits_rejected_without_changes": true
+    }
+  ]
+}

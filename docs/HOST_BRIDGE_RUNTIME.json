@@ -1,0 +1,28 @@
+{
+  "passed": true,
+  "checks": [
+    "typed local transport identity accepted; JSON claims, unstamped desktop and cross-profile contexts denied",
+    "actual AIAgent threads typed GUI identity through agent_init to copied provider",
+    "actual native memory handler writes canonical state while its prompt snapshot remains frozen",
+    "actual native search, context windows and both resume paths suppress forgotten sources, summaries, unknown echoes and unsynced exact copies",
+    "native read guard fails closed on unavailable service and preserves independent user notes",
+    "parent delegation packet contains scoped live evidence IDs and records exposure without child memory credentials",
+    "review change enters reported-outcome learning without harness prompts, replay duplicates or automatic promotion",
+    "cron recipient allowlist, changed-destination denial and durable run outcome",
+    "immutable run-specific delivery scope survives later denied runs; missing scope denied",
+    "delivery binds exact text to live canonical evidence and run; cross-job and long-output continuity validated",
+    "canonical continuity requires exact recipient scope and live evidence; legacy output withheld",
+    "native history denied for unauthorized and cross-profile caller scopes",
+    "native generated session title and cached prompt are redacted without field-level provenance",
+    "tool-driven cron delivery validates recipients and rejects untracked media without any real send",
+    "native notepad write/read/continuity carries scoped canonical lineage and suppresses forgotten notes",
+    "native metadata browse enforces identity; canonical native recall supports source-dependent answer capture",
+    "actual native skill loader accepts active evaluated export and rejects it after retraction",
+    "withheld host events have durable typed receipts and propagate to the native caller"
+  ],
+  "actual_AIAgent": true,
+  "actual_SessionDB": true,
+  "live_model": false,
+  "full_desktop_ui": false,
+  "real_cron_delivery": false
+}

@@ -1,0 +1,160 @@
+{
+  "scope": "20 synthetic records; 12 curated questions; no user archive or LLM answer evaluation",
+  "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "model_key": "b4f41e8cd7b1fb9ade0905f015c6c2a2c85f84159cbcaeb14005e02d644aca33",
+  "index": "hnsw",
+  "python": "3.12.13",
+  "records": 20,
+  "queries": 12,
+  "indexing_seconds": 3.7,
+  "recall_at_1": 0.8333333333333334,
+  "recall_at_3": 0.9166666666666666,
+  "mrr_at_3": 0.8611111111111112,
+  "latency_median_ms": 53.735,
+  "latency_max_ms": 64.11,
+  "negative_query_returned_candidates": 3,
+  "abstention": "Candidates are not answers. No calibrated absence threshold; Hermes must inspect evidence and say unknown when unsupported.",
+  "cases": [
+    {
+      "language": "en",
+      "query": "Who fixed my automobile?",
+      "expected": "garage",
+      "retrieved": [
+        "garage",
+        "newaddress",
+        "oldaddress"
+      ],
+      "rank": 1,
+      "elapsed_ms": 64.11
+    },
+    {
+      "language": "hi",
+      "query": "मेरी गाड़ी का इंजन किसने ठीक किया था?",
+      "expected": "garage",
+      "retrieved": [
+        "garage",
+        "train",
+        "newaddress"
+      ],
+      "rank": 1,
+      "elapsed_ms": 55.46
+    },
+    {
+      "language": "hinglish",
+      "query": "Gaadi repair karane ke liye Ravi ne kaunsi jagah batayi thi?",
+      "expected": "garage",
+      "retrieved": [
+        "garage",
+        "cycle",
+        "book"
+      ],
+      "rank": 1,
+      "elapsed_ms": 56.9
+    },
+    {
+      "language": "en",
+      "query": "Where did I put my travel identity document?",
+      "expected": "passport",
+      "retrieved": [
+        "newaddress",
+        "book",
+        "passport"
+      ],
+      "rank": 3,
+      "elapsed_ms": 45.1
+    },
+    {
+      "language": "hi",
+      "query": "मेरा पासपोर्ट कहाँ रखा है?",
+      "expected": "passport",
+      "retrieved": [
+        "passport",
+        "newaddress",
+        "train"
+      ],
+      "rank": 1,
+      "elapsed_ms": 52.01
+    },
+    {
+      "language": "en",
+      "query": "How should I restart the internet equipment at home?",
+      "expected": "wifi",
+      "retrieved": [
+        "wifi",
+        "flight",
+        "school"
+      ],
+      "rank": 1,
+      "elapsed_ms": 58.87
+    },
+    {
+      "language": "en",
+      "query": "Which antibiotic am I allergic to?",
+      "expected": "allergy",
+      "retrieved": [
+        "dentist",
+        "music",
+        "food"
+      ],
+      "rank": null,
+      "elapsed_ms": 45.59
+    },
+    {
+      "language": "en",
+      "query": "Who designs buildings and attended school with me?",
+      "expected": "school",
+      "retrieved": [
+        "school",
+        "cycle",
+        "sleep"
+      ],
+      "rank": 1,
+      "elapsed_ms": 61.81
+    },
+    {
+      "language": "hi",
+      "query": "मुझे खाने में क्या पसंद नहीं है?",
+      "expected": "food",
+      "retrieved": [
+        "food",
+        "music",
+        "pet"
+      ],
+      "rank": 1,
+      "elapsed_ms": 42.27
+    },
+    {
+      "language": "en",
+      "query": "How much rest did I get overnight?",
+      "expected": "sleep",
+      "retrieved": [
+        "sleep",
+        "gym"
+      ],
+      "rank": 1,
+      "elapsed_ms": 44.93
+    },
+    {
+      "language": "en",
+      "query": "Where is my office?",
+      "expected": "newaddress",
+      "retrieved": [
+        "newaddress",
+        "dentist",
+        "train"
+      ],
+      "rank": 1,
+      "elapsed_ms": 34.51
+    },
+    {
+      "language": "en",
+      "query": "Where was my workplace in 2022?",
+      "expected": "oldaddress",
+      "retrieved": [
+        "oldaddress"
+      ],
+      "rank": 1,
+      "elapsed_ms": 58.55
+    }
+  ]
+}

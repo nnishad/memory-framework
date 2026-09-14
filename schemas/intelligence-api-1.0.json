@@ -1,0 +1,323 @@
+{
+  "version": "1.0",
+  "endpoints": {
+    "/v1/learning/outcome": {
+      "required": [
+        "key",
+        "goal",
+        "action",
+        "result",
+        "outcome",
+        "evidence_ids"
+      ],
+      "optional_defaults": {
+        "memory_ids": null
+      },
+      "additional_parameters": false
+    },
+    "/v1/learning/propose": {
+      "required": [
+        "key",
+        "family",
+        "revision",
+        "category",
+        "lesson",
+        "scope",
+        "prerequisites",
+        "exceptions",
+        "outcome_ids",
+        "evidence_ids"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/learning/evaluate": {
+      "required": [
+        "key",
+        "candidate_id",
+        "cases",
+        "evidence_ids"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/learning/promote": {
+      "required": [
+        "candidate_id",
+        "evaluation_id",
+        "expected_active_id"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/learning/retract": {
+      "required": [
+        "candidate_id"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/metric": {
+      "required": [
+        "metric",
+        "canonical_unit",
+        "conversions"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/domain": {
+      "required": [
+        "domain",
+        "required_sources",
+        "scope"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/snapshot": {
+      "required": [
+        "key",
+        "record_ids"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/belief": {
+      "required": [
+        "key",
+        "subject_id",
+        "predicate",
+        "value",
+        "evidence"
+      ],
+      "optional_defaults": {
+        "origin": "reported",
+        "context": null,
+        "valid_from": null,
+        "valid_to": null,
+        "quantifier": "value",
+        "domain": null
+      },
+      "additional_parameters": false
+    },
+    "/v1/belief/resolve": {
+      "required": [
+        "belief_id",
+        "supersedes"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/relation": {
+      "required": [
+        "key",
+        "subject_id",
+        "predicate",
+        "object_id",
+        "evidence"
+      ],
+      "optional_defaults": {
+        "valid_from": null,
+        "valid_to": null
+      },
+      "additional_parameters": false
+    },
+    "/v1/measurement": {
+      "required": [
+        "key",
+        "subject_id",
+        "metric",
+        "value",
+        "unit",
+        "measured_at",
+        "evidence"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/task": {
+      "required": [
+        "key",
+        "title",
+        "evidence_ids"
+      ],
+      "optional_defaults": {
+        "due_at": null,
+        "depends_on": null
+      },
+      "additional_parameters": false
+    },
+    "/v1/task/transition": {
+      "required": [
+        "task_id",
+        "expected_version",
+        "state",
+        "evidence_ids"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/task/event/claim": {
+      "required": [],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/task/event/retry": {
+      "required": [
+        "event_id"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/task/event/ack": {
+      "required": [
+        "event_id",
+        "lease"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/feedback": {
+      "required": [
+        "key",
+        "record_id",
+        "result"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/consolidation/accept": {
+      "required": [
+        "result_id"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/workflow/enqueue": {
+      "required": [
+        "key",
+        "type"
+      ],
+      "optional_defaults": {
+        "snapshot_id": null,
+        "candidate_id": null,
+        "suite_id": null,
+        "segments": null
+      },
+      "additional_parameters": false
+    },
+    "/v1/workflow/retry": {
+      "required": [
+        "job_id"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/suite": {
+      "required": [
+        "key",
+        "cases",
+        "evidence_ids"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/procedure": {
+      "required": [
+        "key",
+        "candidate_id",
+        "capability",
+        "arguments",
+        "expected"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/procedure/execute": {
+      "required": [
+        "key",
+        "procedure_id"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/beliefs": {
+      "required": [
+        "subject_id"
+      ],
+      "optional_defaults": {
+        "predicate": null,
+        "context": null,
+        "at": null,
+        "limit": 100
+      },
+      "additional_parameters": false
+    },
+    "/v1/graph": {
+      "required": [
+        "entity_id"
+      ],
+      "optional_defaults": {
+        "hops": 2,
+        "at": null,
+        "max_edges": 100
+      },
+      "additional_parameters": false
+    },
+    "/v1/aggregate": {
+      "required": [
+        "subject_id",
+        "metric",
+        "unit",
+        "after",
+        "before"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/tasks": {
+      "required": [],
+      "optional_defaults": {
+        "state": null,
+        "after": "",
+        "limit": 50
+      },
+      "additional_parameters": false
+    },
+    "/v1/workflow": {
+      "required": [
+        "job_id"
+      ],
+      "optional_defaults": {},
+      "additional_parameters": false
+    },
+    "/v1/domain/coverage": {
+      "required": [
+        "domain"
+      ],
+      "optional_defaults": {
+        "through_at": null
+      },
+      "additional_parameters": false
+    },
+    "/v1/procedures": {
+      "required": [],
+      "optional_defaults": {
+        "after": "",
+        "limit": 20
+      },
+      "additional_parameters": false
+    },
+    "/v1/summaries": {
+      "required": [
+        "query"
+      ],
+      "optional_defaults": {
+        "limit": 10
+      },
+      "additional_parameters": false
+    }
+  },
+  "authority": "Credentials and session policy are checked separately; schema discovery grants no write or execution permission."
+}

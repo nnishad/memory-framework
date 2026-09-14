@@ -1,0 +1,31 @@
+# Python build and interpreter artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments and editor/OS metadata
+.venv/
+venv/
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime state, databases, logs, and credentials
+.env
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+*.pid
+*.key
+*.pem
+auth.json
+settings.json
+personal-memory/

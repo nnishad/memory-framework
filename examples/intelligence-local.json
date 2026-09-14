@@ -1,0 +1,15 @@
+{
+  "intelligence": {
+    "timeout": 20,
+    "auto_consolidate": true,
+    "adapters": {
+      "consolidate": {
+        "entrypoint": "personal_memory.adapters:extractive",
+        "config": {}
+      }
+    },
+    "capabilities": {},
+    "learning_policies": {},
+    "recall": {}
+  }
+}

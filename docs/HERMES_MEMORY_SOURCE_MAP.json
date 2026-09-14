@@ -1,0 +1,404 @@
+{
+  "tag": "v2026.8.31",
+  "commit": "29112bef099274229cadff79cdff7bf7b99c4b77",
+  "files": [
+    {
+      "file": "agent/memory_provider.py",
+      "sha256": "902e061d33b372cc28facd8c7bf7fe032aacda3f17ea1e4107fea9fd01885335",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/agent/memory_provider.py",
+      "symbols": [
+        {
+          "marker": "class MemoryProvider",
+          "lines": [
+            110
+          ]
+        },
+        {
+          "marker": "def on_memory_write",
+          "lines": [
+            381
+          ]
+        },
+        {
+          "marker": "def on_delegation",
+          "lines": [
+            329
+          ]
+        }
+      ]
+    },
+    {
+      "file": "agent/agent_init.py",
+      "sha256": "a7caf2c1fcd66fe55b483435ec759811376c303d0724a8dda57446f6dfd61545",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/agent/agent_init.py",
+      "symbols": [
+        {
+          "marker": "if not skip_memory:",
+          "lines": [
+            1903
+          ]
+        },
+        {
+          "marker": "initialize_all",
+          "lines": [
+            1975
+          ]
+        }
+      ]
+    },
+    {
+      "file": "agent/turn_context.py",
+      "sha256": "86a4f6c61183167850046b025a8f5c7b8601fb910f8a9ee464535afccc541c06",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/agent/turn_context.py",
+      "symbols": [
+        {
+          "marker": "prefetch_all",
+          "lines": [
+            1479,
+            1496
+          ]
+        },
+        {
+          "marker": "on_turn_start",
+          "lines": [
+            1483
+          ]
+        }
+      ]
+    },
+    {
+      "file": "agent/memory_manager.py",
+      "sha256": "a706285f0bbad1cbca57c2c1cf5151ec3fda04e586210333eb6639966b956639",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/agent/memory_manager.py",
+      "symbols": [
+        {
+          "marker": "def sync_all",
+          "lines": [
+            744
+          ]
+        },
+        {
+          "marker": "def on_pre_compress",
+          "lines": [
+            1113,
+            1165
+          ]
+        },
+        {
+          "marker": "def on_session_end",
+          "lines": [
+            984
+          ]
+        }
+      ]
+    },
+    {
+      "file": "run_agent.py",
+      "sha256": "5b2e7083680e6c728f2306adc73e5f814c444aaa9ff3e3b840206142c67a7149",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/run_agent.py",
+      "symbols": [
+        {
+          "marker": "if interrupted:",
+          "lines": [
+            4541
+          ]
+        },
+        {
+          "marker": "self._memory_manager.sync_all",
+          "lines": [
+            4556
+          ]
+        }
+      ]
+    },
+    {
+      "file": "agent/conversation_compression.py",
+      "sha256": "981aa8113cdbbe130a86ed81f12c95e5ce2442d7e571f00f7936ad8b3237d39e",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/agent/conversation_compression.py",
+      "symbols": [
+        {
+          "marker": "on_pre_compress",
+          "lines": [
+            35,
+            3175,
+            3818,
+            3825,
+            3848,
+            3866
+          ]
+        },
+        {
+          "marker": "on_session_switch",
+          "lines": [
+            35,
+            2044,
+            5159,
+            5166
+          ]
+        }
+      ]
+    },
+    {
+      "file": "agent/context_compressor.py",
+      "sha256": "13a944ae4c20ce0c9c6f920b45dc7b262e45289d0f4c4ff4ef0a8e509d0ec062",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/agent/context_compressor.py",
+      "symbols": [
+        {
+          "marker": "Recover with session_search",
+          "lines": [
+            1038
+          ]
+        },
+        {
+          "marker": "persistent memory (MEMORY.md",
+          "lines": [
+            257,
+            679,
+            712,
+            745,
+            770,
+            8140
+          ]
+        }
+      ]
+    },
+    {
+      "file": "tools/session_search_tool.py",
+      "sha256": "0b03e166966592199477f38d2aca202938428451ea1c2b25ecc1ec8232996bf9",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/tools/session_search_tool.py",
+      "symbols": [
+        {
+          "marker": "def session_search",
+          "lines": [
+            1082
+          ]
+        }
+      ]
+    },
+    {
+      "file": "hermes_state.py",
+      "sha256": "696fd2d37d66a599228f5b1be5d5b76423b744149c83a2fbd59bf3f45a5f3891",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/hermes_state.py",
+      "symbols": [
+        {
+          "marker": "DEFAULT_DB_PATH",
+          "lines": [
+            363,
+            660,
+            661,
+            667,
+            674,
+            679,
+            680
+          ]
+        }
+      ]
+    },
+    {
+      "file": "tools/delegate_tool.py",
+      "sha256": "e76ace046ac09a4459e8a42022ea3b6b71a67296736d727b26658a9dee7e08f2",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/tools/delegate_tool.py",
+      "symbols": [
+        {
+          "marker": "skip_memory=True",
+          "lines": [
+            2092
+          ]
+        },
+        {
+          "marker": "platform=\"subagent\"",
+          "lines": [
+            2090
+          ]
+        }
+      ]
+    },
+    {
+      "file": "agent/background_review.py",
+      "sha256": "478c5e2b226e1813b7874b7922af66f63e989e2794699e937bacf55f5eb910a0",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/agent/background_review.py",
+      "symbols": [
+        {
+          "marker": "skip_memory=True",
+          "lines": [
+            1146,
+            1234
+          ]
+        },
+        {
+          "marker": "review_agent._memory_store",
+          "lines": [
+            1246
+          ]
+        }
+      ]
+    },
+    {
+      "file": "tools/skill_manager_tool.py",
+      "sha256": "c7bde0e77a25bb3677430dcbb5a76d08c66c0dfd71b5022a3202420d3b820069",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/tools/skill_manager_tool.py",
+      "symbols": [
+        {
+          "marker": "~/.hermes/skills/",
+          "lines": [
+            7,
+            23,
+            174,
+            683,
+            1342
+          ]
+        }
+      ]
+    },
+    {
+      "file": "tools/skill_usage.py",
+      "sha256": "c465e91b76f9e63c37f6f407a78edb6e234c31318a9b4535ddcfdf0860fe40a7",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/tools/skill_usage.py",
+      "symbols": [
+        {
+          "marker": "def ",
+          "lines": [
+            70,
+            80,
+            84,
+            89,
+            124,
+            128,
+            132,
+            145,
+            165,
+            180,
+            203,
+            249
+          ]
+        }
+      ]
+    },
+    {
+      "file": "tools/todo_tool.py",
+      "sha256": "d9d9ec131bc4cf76a6d763b13a394003fc7638cb3c271b3635bcef439c4566c9",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/tools/todo_tool.py",
+      "symbols": [
+        {
+          "marker": "The state lives on the AIAgent instance",
+          "lines": [
+            7
+          ]
+        }
+      ]
+    },
+    {
+      "file": "cron/scheduler.py",
+      "sha256": "a2c003544489c5a9eb729b4964cc56c6c5fed066b94217d44545b8d897de6b12",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/cron/scheduler.py",
+      "symbols": [
+        {
+          "marker": "notepad_section",
+          "lines": [
+            4698,
+            4699,
+            4700
+          ]
+        },
+        {
+          "marker": "skip_memory=False",
+          "lines": [
+            6460
+          ]
+        },
+        {
+          "marker": "platform=\"cron\"",
+          "lines": [
+            6462
+          ]
+        }
+      ]
+    },
+    {
+      "file": "cron/notepad.py",
+      "sha256": "5f6c23845be9e19dac88255269c514d729416ea79469a493600be21fe7a8939a",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/cron/notepad.py",
+      "symbols": [
+        {
+          "marker": "NOTEPAD_FILE",
+          "lines": [
+            34,
+            44,
+            45,
+            160
+          ]
+        }
+      ]
+    },
+    {
+      "file": "tui_gateway/server.py",
+      "sha256": "e264c1c7cc2e99051c1e36f4019dd29b739d5b7f1c61b8e364f87ad6039d1900",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/tui_gateway/server.py",
+      "symbols": [
+        {
+          "marker": "def _resolve_session_platform",
+          "lines": [
+            5237
+          ]
+        },
+        {
+          "marker": "def _resolve_agent_platform",
+          "lines": [
+            5276
+          ]
+        }
+      ]
+    },
+    {
+      "file": "agent/system_prompt.py",
+      "sha256": "40ec9fe2e0b0f60ade85f4b2183904f400719550e4dcf37ba9918b70fc7a2f4c",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/agent/system_prompt.py",
+      "symbols": [
+        {
+          "marker": "SOUL.md",
+          "lines": [
+            12,
+            472,
+            477,
+            479,
+            1106,
+            1112
+          ]
+        },
+        {
+          "marker": "build_skills_system_prompt",
+          "lines": [
+            73,
+            641
+          ]
+        }
+      ]
+    },
+    {
+      "file": "hermes_cli/web_server.py",
+      "sha256": "c56b2f4605f0858704463a4f8ed8f3e44b56bba0f53b0e1839c33a537b4b16f4",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/hermes_cli/web_server.py",
+      "symbols": [
+        {
+          "marker": "async def reset_memory",
+          "lines": [
+            14378
+          ]
+        }
+      ]
+    },
+    {
+      "file": "gateway/run.py",
+      "sha256": "cc9714959b6724f2e15979576599f87254b470368a29c6395740049e92b671dc",
+      "url": "https://github.com/NousResearch/hermes-agent/blob/29112bef099274229cadff79cdff7bf7b99c4b77/gateway/run.py",
+      "symbols": [
+        {
+          "marker": "agent.shutdown_memory_provider(session_messages)",
+          "lines": [
+            11993
+          ]
+        }
+      ]
+    }
+  ]
+}
