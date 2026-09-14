@@ -127,3 +127,41 @@ for long-running agents.
 - **Conclusion:** the framework **is** optimisable and this optimisation measurably helps. Follow-on
   candidates (each needing the same benchmark-before/after discipline): learned cross-encoder rerank
   of the fused top-k, recency/importance in the base score, and HippoRAG-style multi-hop activation.
+
+## 8. Live deployment + production A/B against the real Hindsight GPU stack
+
+The Section 7 change was then deployed to the **running production service** and validated end-to-end
+through the actual `/v1/ingest` → `/v1/search` path (keyword **FTS5** + fastembed **semantic** +
+**Hindsight on GPU**), not just the in-process harness.
+
+- **Import authority.** `run_service.py` does `sys.path.insert(0, …/plugins/personal-memory)`, so the
+  live service imports `personal_memory` from `/home/hermes/.hermes/plugins/personal-memory/` (that
+  `retrieval.py` — not the framework copy or site-packages — is what must be synced).
+- **Restart-race gotcha (fixed).** The first restart attempt failed (`startup.failed` →
+  `RuntimeError`) even after rolling the code+config back to the original, which proved the failure was
+  **environmental, not the change**: the managed Hindsight daemon + its embedded Postgres need a **full
+  teardown** (release of `:9276` and the `pg0` data dir) before relaunch; a fixed `sleep 3` after
+  `pkill` was insufficient. An in-process repro that ran the identical startup sequence booted fine
+  (`LEASE ok → HINDSIGHT ok → SERVICE ok`). Hardened deploy scripts now `pkill`, then **wait until both
+  ports are free and no daemon/postgres remains**, before every launch. With that, restarts succeed.
+- **Non-destructive.** Demo facts used dedicated sources (`tbench`, `tbench2`), were removed afterwards
+  via `/v1/forget-source`, and both `retrieval.py` and `config.json` were backed up before overwrite with
+  an automatic rollback-and-recover path on any failed restart. The service is left **UP**.
+- **Live A/B** — same deployed code, only `retrieval.temporal.weight` toggled; a *stale-dominant*
+  conflict (the old fact stated richly/repeatedly, the current fact stated once and briefly):
+
+  | scenario (query) | weight **0 (OFF)** top hit | weight **1.0 (ON)** top hit |
+  |---|---|---|
+  | `my favorite coffee` (2 rich stale vs 1 thin current) | `coffee_old1` → **STALE-FIRST** ❌ | `coffee_new` → **CURRENT-FIRST** ✅ (stale demoted 1→3) |
+  | `how do I commute` (current already wins on fused score) | `transit_new` (CURRENT) | `transit_new` (CURRENT) — **neutral, no regression** |
+
+  On the fully-indexed multi-channel stack, *light* conflicts already surface the current fact first
+  (so recency is correctly a no-op there), and the earlier stale-first seen in the first run was an
+  **under-indexed artifact**. When the fused RRF genuinely prefers a stale memory, the recency bonus
+  flips it to the current fact — reproduced live on GPU, with **zero** change to the already-correct case.
+- **State after run:** `retrieval.temporal = {weight: 1.0, half_life_days: 365}` is now **enabled** in the
+  live `config.json` (the requested deploy). **Revert:** delete `retrieval.temporal` from
+  `~/.hermes/personal-memory/config.json` and restart, or restore the timestamped `~/.e2e-backup-*` copy.
+
+  Driver scripts: `.e2e/127_live_op.py`, `.e2e/132_robust_demo.sh`, `.e2e/134_live_conflict.py`,
+  `.e2e/133_live_toggle.sh` (and `.e2e/129_state_probe.sh`, `.e2e/130_diag.sh`, `.e2e/131_repro_startup.sh`).
