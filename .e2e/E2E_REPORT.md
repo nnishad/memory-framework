@@ -325,3 +325,54 @@ A/B/C were committed + benchmarked, but the running memory service (pid 1534) st
   rerank and multi-hop graph activation are all enabled-by-default and verified active end-to-end.
 
   Scripts: `.e2e/145_deploy_restart.sh`, `.e2e/146b_verify_cli.sh`, `.e2e/147_roundtrip.sh`.
+
+## 14. Upgrade to Hermes v2026.9.14 (v0.21.3) and re-verify the memory bridge
+
+- **Latest release:** upstream `NousResearch/hermes-agent` is **v0.21.3 (`v2026.9.14`)**, commit
+  `345cd2b`, released today. We had been pinned to the previous **v0.21.2 (`v2026.9.11`)**, commit
+  `939e45c`. This section upgrades the pinned host to `v2026.9.14` and re-verifies integration.
+- **Churn assessment (`v2026.9.11 → v2026.9.14`):** 24 of our 30 patch-pinned files changed
+  (`cli_session_mixin.py −256`, `cron/scheduler.py +163`, `cli.py +108`, `hermes_state.py +99`);
+  the `pyproject.toml` anchor itself moved. Upstream ships **no** `agent/memory_bridge.py`, so our
+  new-file payload has no collision. The patch was re-applied by committing it on the 9.11 base and
+  **3-way rebasing that single commit onto `v2026.9.14`** — a clean rebase, zero conflicts.
+- **Regenerated pin:** `host-patch/hermes-v2026.9.14.patch` (1236 lines) with fresh before/after
+  hashes; `manifest.json` + `personal_memory/host_contract.json` rewritten for 9.14
+  (`patch_sha256=62477753…`, `pyproject.toml` anchor `a674c321…`). Our `agent/memory_bridge.py` is
+  **byte-identical across the bump** (`d8cd3e15…6acb`) — a strong integrity signal.
+- **Static gate — `check_host_patch.py`: PASSED** on a pristine `v2026.9.14` worktree through the
+  full fixture: `check → apply → apply(idempotent) → rollback → rollback → local-edit-rejected`.
+- **Runtime bridge gates against patched 9.14 — all PASSED (rc=0):**
+  - `check_host_bridges.py` — real provider + `agent.memory_bridge` + `MemoryManager` + `AIAgent` +
+    `SessionDB` + gateway transports: cron delivery allowlist/deny, durable run-scope, canonical
+    continuity, native-history authorization/redaction, notepad lineage, native skill loader,
+    typed receipts. `docs/HOST_BRIDGE_RUNTIME.json` regenerated.
+  - `check_native_history.py` — actual `v2026.9.14` SessionDB schema, read-only sync, tombstone
+    propagation. `docs/HERMES_NATIVE_HISTORY_RUNTIME.json` regenerated (`hermes_tag: v2026.9.14`).
+  - The 17-assertion `check_hermes_release.py` **passes every functional memory-bridge assertion**
+    on 9.14: provider discovery, native config, tool injection, background `sync_all`, search recall,
+    parallel investigation, `doctor` (incl. `pinned_host_patch` ✓), progressive recall + learning
+    tools, beliefs/tasks/durable consolidation, evaluation suite + promotion + procedure execution,
+    checkpoint-v2, serialized session boundary and source attribution.
+- **Full regression on WSL:** `Ran 178 tests OK (skipped=21)` — unchanged, framework behaviour intact.
+- **One assertion needs an environment caveat — automatic-recall latency budget.**
+  `check_hermes_release.py` hard-pins `prefetch_wait_ms=200` and asserts the *first-call* automatic
+  prefetch injects within it. Measured against the live framework service and the check's own
+  ephemeral home, a warm `depth=fast` search over the **Hindsight GPU** engine runs **~420 ms (live)
+  to ~600 ms (ephemeral) median** — 3× the 200 ms pin — so the very first automatic recall returns
+  `"recall is pending"` (the intended bounded-wait fallback) instead of hydrated text.
+  - This is **not a v2026.9.14 regression and not the cross-encoder**: with rerank disabled via
+    `PERSONAL_MEMORY_DISABLE_RERANK=1` the fast search is still ~600 ms; Hindsight query inference
+    dominates (`candidates: {keyword:32, semantic:30, hindsight:49}`), and it is independent of the
+    Hermes release. Earlier suspicion that rerank on the fast path caused it was disproved here.
+  - **Proof the bridge itself is sound:** on a throwaway copy of the gate that only raises the
+    automatic-recall wait to the measured latency, the prefetch hydrates correctly
+    (`PREFETCH_INJECTS_WITH_RAISED_BUDGET: True`) and the **full gate reports 17 passed / 0 failed**
+    against patched 9.14.
+  - **Open decision (not silently changed here):** the 200 ms first-call pin is an SLA assumption
+    that Hindsight-GPU deployments do not meet; retuning `prefetch_wait_ms` (or making the gate
+    measure-then-assert) is a product-tuning call, deliberately left for explicit sign-off.
+
+  Scripts: `.e2e/160_final_check.sh`, `.e2e/161_search_latency.sh`, `.e2e/163_export_911.sh`,
+  `.e2e/165_probe_prefetch.sh`, `.e2e/166_contract_vs_tree.sh`, `.e2e/167_run_gates_914.sh`,
+  `.e2e/168_regen_native_doc.sh`.

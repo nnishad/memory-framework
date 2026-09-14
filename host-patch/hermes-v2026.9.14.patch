@@ -1,0 +1,1236 @@
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index e62cf5179b..1ad1b10e58 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1202,6 +1202,13 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
+         "hermes_home": str(get_hermes_home()),
+         "agent_context": "primary",
+     }
++    if getattr(agent, "_memory_host_context", None) is not None:
++        kwargs["host_context"] = agent._memory_host_context
++    with suppress(Exception):
++        from agent.memory_bridge import HOST_MEMORY_API
++        import agent.memory_bridge as _host_memory_bridge
++        kwargs["host_memory_api"] = HOST_MEMORY_API
++        kwargs["host_memory_root"] = str(Path(_host_memory_bridge.__file__).resolve().parent.parent)
+     if kwargs["platform"] == "cli":
+         kwargs["warning_callback"] = agent._emit_warning
+         kwargs["status_callback"] = agent._emit_status
+@@ -1226,7 +1233,8 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
+ 
+ 
+ def _init_memory(agent, _agent_cfg, skip_memory, platform):
+-    # Persistent memory (MEMORY.md + USER.md) — loaded from disk
++    # Persistent memory. ``memory.store: provider`` lets one external provider own
++    # the native MemoryStore surface; otherwise Hermes retains MEMORY.md + USER.md.
+     agent._memory_store = None
+     agent._memory_enabled = False
+     agent._user_profile_enabled = False
+@@ -1244,25 +1252,13 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
+         "memory" in (agent.enabled_toolsets or [])
+         and "memory" not in (agent.disabled_toolsets or [])
+     )
++    mem_config = {}
+     if not skip_memory or _memory_toolset_requested:
+-        # Memory is optional — don't break agent init
+         with suppress(Exception):
+-            from tools.memory_tool import (
+-                MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
+-            )
++            from tools.memory_tool import get_builtin_memory_config, get_builtin_memory_store_flags
+             mem_config = get_builtin_memory_config(_agent_cfg)
+-            agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
+-                _agent_cfg
+-            )
++            agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(_agent_cfg)
+             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+-            if agent._memory_enabled or agent._user_profile_enabled:
+-                agent._memory_store = MemoryStore(
+-                    memory_char_limit=mem_config.get("memory_char_limit", 2200),
+-                    user_char_limit=mem_config.get("user_char_limit", 1375),
+-                    memory_enabled=agent._memory_enabled,
+-                    user_profile_enabled=agent._user_profile_enabled,
+-                )
+-                agent._memory_store.load_from_disk()
+ 
+     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
+     agent._memory_manager = None
+@@ -1292,6 +1288,37 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
+             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
+             agent._memory_manager = None
+ 
++    if (agent._memory_enabled or agent._user_profile_enabled) and (not skip_memory or _memory_toolset_requested):
++        _store_mode = str(mem_config.get("store", "files") or "files").strip().lower()
++        if _store_mode == "provider":
++            # Fail stable: after explicit opt-in, an unavailable canonical service must not
++            # expose stale file memory or accept writes into a second source of truth.
++            if agent._memory_manager:
++                try:
++                    agent._memory_store = agent._memory_manager.create_native_memory_store(
++                        memory_char_limit=mem_config.get("memory_char_limit", 2200),
++                        user_char_limit=mem_config.get("user_char_limit", 1375),
++                        memory_enabled=agent._memory_enabled,
++                        user_profile_enabled=agent._user_profile_enabled,
++                    )
++                    if agent._memory_store is not None:
++                        agent._memory_store.load_from_disk()
++                except Exception as _canonical_error:
++                    _ra().logger.warning("Canonical native memory unavailable: %s", _canonical_error)
++                    agent._memory_store = None
++            else:
++                _ra().logger.warning("memory.store=provider but no memory provider is active")
++        else:
++            with suppress(Exception):
++                from tools.memory_tool import MemoryStore
++                agent._memory_store = MemoryStore(
++                    memory_char_limit=mem_config.get("memory_char_limit", 2200),
++                    user_char_limit=mem_config.get("user_char_limit", 1375),
++                    memory_enabled=agent._memory_enabled,
++                    user_profile_enabled=agent._user_profile_enabled,
++                )
++                agent._memory_store.load_from_disk()
++
+     from agent.memory_manager import inject_memory_provider_tools
+     inject_memory_provider_tools(agent)
+ 
+@@ -2204,6 +2231,7 @@ def init_agent(
+     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
+     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
+     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
++    memory_host_context=None,
+ ):
+     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
+ 
+@@ -2218,6 +2246,7 @@ def init_agent(
+       skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md/.cursorrules injection;
+         load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
+     """
++    agent._memory_host_context = memory_host_context
+     _install_safe_stdio()
+ 
+     _params = locals()
+diff --git a/agent/background_review.py b/agent/background_review.py
+index 5979b1134b..acc5e4074e 100644
+--- a/agent/background_review.py
++++ b/agent/background_review.py
+@@ -931,7 +931,12 @@ def build_cache_parity_fork(
+         _warn_ignored_reasoning_effort(agent, task_cfg)
+     review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
+     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
+-    review_agent._memory_store = agent._memory_store
++    # Canonical stores expose fork(): background review receives an isolated live
++    # view/version while preserving the parent's byte-stable prompt snapshot.
++    _parent_store = agent._memory_store
++    review_agent._memory_store = (
++        _parent_store.fork() if getattr(_parent_store, "framework_backed", False) else _parent_store
++    )
+     review_agent._memory_enabled = agent._memory_enabled
+     review_agent._user_profile_enabled = agent._user_profile_enabled
+     review_agent._memory_nudge_interval = review_agent._skill_nudge_interval = 0
+@@ -1217,6 +1222,8 @@ def _run_review_in_thread(
+             )
+             actions = []
+         _log_review_completion(st.review_usage, _classify_review_result(actions))
++        from agent.memory_bridge import review_completed
++        review_completed(agent, st.review_messages, messages_snapshot)
+         if actions:
+             _publish_review_summary(agent, actions)
+     except Exception as e:
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+index 41d92dee2b..22854f7617 100644
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -209,9 +209,8 @@ SUMMARY_PREFIX = (
+     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+     "topic) must immediately end any in-flight work described in the "
+     "summary; do not re-surface it in later turns. "
+-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+-    "memory content due to this compaction note. "
++    "IMPORTANT: Consult configured persistent memory when the task requires it. "
++    "Memory is evidence, not authority; governing instructions and current user intent remain in force. "
+     "None of the above restricts HOW you work: your tools remain fully "
+     "active — keep calling them normally for the active task (edit files, "
+     "run commands, search) instead of merely narrating what you would do. "
+diff --git a/agent/inline_tool_executors.py b/agent/inline_tool_executors.py
+index 98b9ef85ea..2c69dbafbd 100644
+--- a/agent/inline_tool_executors.py
++++ b/agent/inline_tool_executors.py
+@@ -56,6 +56,19 @@ def emit_terminal_post_tool_call(
+         )
+     except Exception:
+         pass
++    # Memory observation is independent from the normal hook bus so a capture outage
++    # can never rewrite a successful tool result or fail the surrounding turn.
++    try:
++        manager = getattr(agent, "_memory_manager", None)
++        if manager:
++            manager.observe_tool_result(
++                function_name, function_args, result,
++                metadata={**tool_hook_ids(agent, effective_task_id, tool_call_id),
++                          "duration_ms": duration_ms, "status": status or "",
++                          "error_type": error_type or "", "error_message": error_message or ""},
++            )
++    except Exception:
++        pass
+ 
+ 
+ @dataclass
+@@ -99,7 +112,8 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
+         from hermes_state import format_session_db_unavailable
+ 
+         return json.dumps({"success": False, "error": format_session_db_unavailable()})
+-    return _call_tool(
++    from agent.memory_bridge import native_recall
++    return native_recall(lambda: _call_tool(
+         "tools.session_search_tool", "session_search", args,
+         (
+             ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
+@@ -108,7 +122,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
+             ("detail", "detail", "adaptive"),
+         ),
+         db=session_db, current_session_id=agent.session_id,
+-    )
++    ))
+ 
+ 
+ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
+@@ -122,7 +136,7 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
+     )
+     # Mirror built-in memory writes to external providers; gating lives in
+     # MemoryManager.notify_memory_tool_write.
+-    if agent._memory_manager:
++    if agent._memory_manager and not getattr(agent._memory_store, "framework_backed", False):
+         agent._memory_manager.notify_memory_tool_write(
+             result,
+             args,
+diff --git a/agent/memory_bridge.py b/agent/memory_bridge.py
+new file mode 100644
+index 0000000000..59270164e2
+--- /dev/null
++++ b/agent/memory_bridge.py
+@@ -0,0 +1,315 @@
++"""Optional host memory boundaries; backend-specific policy stays in providers.
++
++No model tools and no changes to a live conversation's cached prompt prefix.
++"""
++HOST_MEMORY_API = 2
++
++from dataclasses import dataclass
++from pathlib import Path
++from contextvars import ContextVar
++from contextlib import contextmanager
++from functools import wraps
++
++
++@dataclass(frozen=True)
++class MemoryHostContext:
++    home: str
++    kind: str
++    user_id: str = ""
++    identity_provider: str = ""
++    job_id: str = ""
++    run_id: str = ""
++    targets: tuple = ()
++    local_delivery: bool = False
++
++
++def gui_context(transport, home):
++    from tui_gateway.transport import StdioTransport, TeeTransport
++    while isinstance(transport, TeeTransport):
++        transport = transport._primary
++    if isinstance(transport, StdioTransport):
++        return MemoryHostContext(str(Path(home).resolve()), "local_owner")
++    from tui_gateway.ws import WSTransport
++    if isinstance(transport, WSTransport):
++        if getattr(transport, "memory_owner", False) is True:
++            return MemoryHostContext(str(Path(home).resolve()), "local_owner")
++        identity = transport.auth_identity
++        if isinstance(identity, dict) and identity.get("user_id") and identity.get("provider"):
++            return MemoryHostContext(str(Path(home).resolve()), "authenticated_user",
++                                     str(identity["user_id"]), str(identity["provider"]))
++    return None
++
++
++def target_keys(targets):
++    return tuple(sorted({(str(t["platform"]).lower(), str(t["chat_id"]), str(t.get("thread_id") or "")) for t in targets}))
++
++
++def cron_context(home, job, run_id, targets, local_delivery):
++    return MemoryHostContext(str(Path(home).resolve()), "cron", job_id=str(job["id"]),
++                             run_id=str(run_id), targets=target_keys(targets), local_delivery=bool(local_delivery))
++
++
++def emit(agent, event, payload):
++    manager = getattr(agent, "_memory_manager", None)
++    acknowledgements = []
++    for provider in getattr(manager, "providers", ()):
++        callback = getattr(provider, "on_host_event", None)
++        if callable(callback):
++            acknowledgement = callback(event, payload)
++            acknowledgements.append(acknowledgement)
++            if isinstance(acknowledgement, dict) and acknowledgement.get("state") in {"withheld", "failed"}:
++                raise RuntimeError("Memory event " + acknowledgement["state"] + ": " + acknowledgement.get("reason", ""))
++    return acknowledgements
++
++
++def delegation_packet(agent, goal):
++    manager = getattr(agent, "_memory_manager", None)
++    packets = []
++    for provider in getattr(manager, "providers", ()):
++        callback = getattr(provider, "delegation_context", None)
++        if callable(callback):
++            packet = callback(goal)
++            if packet: packets.append(str(packet))
++    return "\n\n".join(packets)
++
++
++def review_completed(agent, messages, prior):
++    import json
++    prior_ids = {m.get("tool_call_id") for m in prior if isinstance(m, dict) and m.get("role") == "tool"}
++    calls = {}
++    for message in messages:
++        if not isinstance(message, dict): continue
++        for call in message.get("tool_calls") or []:
++            if not isinstance(call, dict): continue
++            fn = call.get("function") or {}
++            if not isinstance(fn, dict): continue
++            if fn.get("name") not in {"skill_manage", "memory"}: continue
++            try: args = json.loads(fn.get("arguments") or "{}")
++            except (TypeError, ValueError): continue
++            if isinstance(args, dict): calls[call.get("id")] = (fn["name"], args)
++        cid = message.get("tool_call_id")
++        if message.get("role") != "tool" or not cid or cid in prior_ids or cid not in calls: continue
++        try: result = json.loads(message.get("content") or "{}")
++        except (TypeError, ValueError): continue
++        if not isinstance(result, dict) or result.get("success") is not True: continue
++        name, args = calls[cid]
++        emit(agent, "review_change", {"tool_call_id": cid, "tool": name, "arguments": args,
++                                     "result": result, "verified": False})
++
++
++def _profile_hook(home, name, *args):
++    import yaml
++    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
++    home = Path(home).resolve()
++    config = home / "config.yaml"
++    if not config.is_file(): return None
++    settings = yaml.safe_load(config.read_text()) or {}
++    provider_name = (settings.get("memory") or {}).get("provider")
++    if not provider_name: return None
++    token = set_hermes_home_override(home)
++    try:
++        from plugins.memory import load_memory_provider
++        provider = load_memory_provider(provider_name)
++        callback = getattr(provider, name, None)
++        return callback(str(home), *args) if callable(callback) else None
++    finally:
++        reset_hermes_home_override(token)
++
++
++def filter_history(database, rows):
++    authorize_history(Path(database).resolve().parent)
++    rows = list(rows)
++    if not rows: return rows
++    result = _profile_hook(Path(database).resolve().parent, "filter_native_history", str(Path(database).resolve()), rows)
++    filtered=rows if result is None else result
++    trace=_native_read_trace.get()
++    if trace is not None:
++        receipt=_profile_hook(Path(database).resolve().parent,'native_read_evidence',str(Path(database).resolve()),filtered)
++        trace.append(receipt if receipt is not None else {'complete':False,'record_ids':[]})
++    return filtered
++
++
++def filter_search(database, matches):
++    matches = filter_history(database, matches)
++    # Neighbour snippets require their own row identity to avoid resurrecting
++    # deleted evidence. Discard unidentifiable context rather than guess.
++    for match in matches:
++        if match.get("context"):
++            match["context"] = filter_history(database, match["context"])
++    return matches
++
++
++def check_cron_delivery(home, job, targets, content=None):
++    run_id = job.get("_memory_run_id") or job.get("execution_id") or ""
++    result = _profile_hook(home, "check_native_delivery", str(job["id"]), target_keys(targets), run_id, content)
++    if result is False:
++        raise PermissionError("Memory-bearing cron output cannot be delivered outside its recorded recipient scope")
++
++
++@dataclass(frozen=True)
++class MemoryReadScope:
++    home: str
++    allowed: bool
++    provider: object = None
++
++
++_read_scope = ContextVar("memory_read_scope", default=None)
++
++
++@contextmanager
++def native_scope(home, allowed, provider=None):
++    token = _read_scope.set(MemoryReadScope(str(Path(home).resolve()), bool(allowed), provider))
++    try: yield
++    finally: _read_scope.reset(token)
++
++
++def agent_memory_scope(fn):
++    @wraps(fn)
++    def scoped(agent, *args, **kwargs):
++        from hermes_constants import get_hermes_home
++        providers = getattr(getattr(agent, '_memory_manager', None), 'providers', ())
++        # Each configured provider may veto native recall. Missing manager is
++        # denied for a profile whose backend requires authenticated history.
++        policies = [p for p in providers if hasattr(p, 'access_allowed')]
++        allowed = bool(policies) and all(p.access_allowed is True for p in policies)
++        provider = policies[0] if len(policies) == 1 else None
++        for policy in policies:
++            check=getattr(policy,'check_session_epoch',None)
++            if callable(check):check()
++        with native_scope(getattr(provider, 'home', get_hermes_home()), allowed, provider):
++            return fn(agent, *args, **kwargs)
++    return scoped
++
++
++def local_memory_scope(fn):
++    @wraps(fn)
++    def scoped(*args, **kwargs):
++        from hermes_constants import get_hermes_home
++        with native_scope(get_hermes_home(), True):
++            return fn(*args, **kwargs)
++    return scoped
++
++
++def authorize_history(home):
++    scope = _read_scope.get()
++    if scope is not None and Path(scope.home).resolve()!=Path(home).resolve() and _profile_hook(scope.home,'requires_native_scope') is True:
++        raise PermissionError('Cross-profile native memory access requires an explicit target-profile session')
++    if scope is None:
++        from tui_gateway.transport import current_transport
++        context = gui_context(current_transport(), home)
++        result = _profile_hook(home, 'authorize_native_history', context)
++    else:
++        result = _profile_hook(home, 'authorize_native_history', scope)
++    if result is False:
++        raise PermissionError('Native memory requires an authenticated caller in the selected profile')
++
++
++def filter_cron_continuity(home, job, content, kind, source_job_id=None):
++    from cron.scheduler import _resolve_delivery_targets, _normalize_deliver_value
++    context = cron_context(home, job, job.get('_memory_run_id', ''),
++                           _resolve_delivery_targets(job),
++                           _normalize_deliver_value(job.get('deliver', 'local')) == 'local')
++    result = _profile_hook(home, 'filter_native_continuity', context, content, kind, source_job_id)
++    return content if result is None else result
++
++
++def register_cron_artifact(agent, job_id, content, kind='output'):
++    receipts=[]
++    for provider in getattr(getattr(agent, '_memory_manager', None), 'providers', ()):
++        callback=getattr(provider, 'register_native_artifact', None)
++        if callable(callback) and getattr(provider, 'access_allowed', True):
++            receipts.append(callback(str(job_id), content, kind))
++    return receipts
++
++
++
++def _notepad_provider(job_id):
++    from hermes_constants import get_hermes_home
++    home=get_hermes_home()
++    if _profile_hook(home,'requires_native_scope') is not True:return None
++    scope=_read_scope.get()
++    if not scope or not scope.allowed or Path(scope.home).resolve()!=Path(home).resolve():
++        raise PermissionError('Native notepad requires authenticated memory scope')
++    provider=scope.provider
++    context=getattr(provider,'host_context',None)
++    if not context or context.kind!='cron' or context.job_id!=str(job_id):
++        raise PermissionError('Native notepad requires its producing job scope')
++    return provider
++
++
++def filter_notepad_notes(job_id, notes):
++    import json
++    provider=_notepad_provider(job_id)
++    if provider is None or not notes:return notes
++    content=json.dumps(notes,sort_keys=True)
++    filtered=provider.filter_native_continuity(provider.home,provider.host_context,content,'notepad')
++    return json.loads(filtered) if filtered else []
++
++
++def guard_notepad_change(job_id, notes):
++    _notepad_provider(job_id)
++    if notes and filter_notepad_notes(job_id,notes)!=notes:
++        raise PermissionError('Untracked or forgotten notepad must be explicitly cleared before reuse')
++
++
++def commit_notepad_change(job_id, notes):
++    import json
++    provider=_notepad_provider(job_id)
++    if provider is not None:
++        provider.register_native_artifact(str(job_id),json.dumps(notes,sort_keys=True),'notepad')
++
++
++
++def reset_provider_memory(home, scope='canonical'):
++    return _profile_hook(home,'reset_native_memory',scope)
++
++
++_native_read_trace = ContextVar('native_read_trace', default=None)
++
++
++def native_recall(callback):
++    """Attach host-collected canonical references to a native tool response."""
++    import json
++    trace=[];token=_native_read_trace.set(trace)
++    try: result=callback()
++    finally:_native_read_trace.reset(token)
++    try: payload=json.loads(result)
++    except (ValueError,TypeError):return result
++    if isinstance(payload,dict):
++        payload['_memory_read']={'tracked':bool(trace) and all(r['complete'] for r in trace),
++                                 'record_ids':sorted({rid for r in trace for rid in r['record_ids']})}
++        return json.dumps(payload,ensure_ascii=False)
++    return result
++
++
++
++def verify_memory_skill(path,content):
++    # Only explicitly managed exports use this optional lifecycle contract.
++    import yaml
++    if not content.startswith('---'):return
++    front=content.split('---',2)
++    if len(front)<3:return
++    metadata=yaml.safe_load(front[1]) or {}
++    if not isinstance(metadata,dict) or metadata.get('memory-provider-managed') is not True:return
++    from hermes_constants import get_hermes_home
++    try:valid=_profile_hook(get_hermes_home(),'verify_exported_skill',str(path),content)
++    except Exception:valid=False
++    if valid is not True:raise PermissionError('Memory-backed skill is inactive, changed, or unavailable; re-evaluate and explicitly export it before use')
++
++
++def retire_notepad(job_id):
++    from hermes_constants import get_hermes_home
++    return _profile_hook(get_hermes_home(),'retire_native_notepad',str(job_id))
++
++
++def authorize_memory_delivery(platform,chat_id,thread_id,content,media):
++    scope=_read_scope.get()
++    callback=getattr(scope.provider if scope else None,'authorize_tool_delivery',None)
++    if callable(callback):callback(str(platform),str(chat_id),str(thread_id or ''),content,media)
++
++
++def filter_session_metadata(database,data):
++    home=Path(database).resolve().parent
++    authorize_history(home)
++    result=_profile_hook(home,'filter_native_session_metadata',dict(data))
++    return data if result is None else result
+diff --git a/agent/memory_manager.py b/agent/memory_manager.py
+index d7f9caa632..0142d94133 100644
+--- a/agent/memory_manager.py
++++ b/agent/memory_manager.py
+@@ -733,6 +733,42 @@ class MemoryManager:
+         external = [p for p in self._providers if p.name != "builtin"]
+         self._each_provider("on_memory_write failed", _notify, providers=external)
+ 
++    def create_native_memory_store(self, **kwargs):
++        """Return the one external provider's native-store replacement, if offered."""
++        for provider in self._providers:
++            if provider.name == "builtin":
++                continue
++            try:
++                store = provider.create_native_memory_store(**kwargs)
++                if store is not None:
++                    return store
++            except Exception as exc:
++                logger.warning("Memory provider '%s' canonical store init failed: %s", provider.name, exc)
++                raise
++        return None
++
++    def observe_tool_result(self, tool_name: str, args: Dict[str, Any], result: Any,
++                            metadata: Optional[Dict[str, Any]] = None) -> None:
++        """Immediately expose terminal tool evidence to providers without affecting execution."""
++        external = [p for p in self._providers if p.name != "builtin"]
++        self._each_provider(
++            "observe_tool_result failed (non-fatal)",
++            lambda p: p.observe_tool_result(tool_name, args, result, metadata=dict(metadata or {})),
++            providers=external,
++        )
++
++    def curated_memory_status(self) -> Optional[Dict[str, Any]]:
++        for provider in self._providers:
++            if provider.name == "builtin":
++                continue
++            try:
++                status = provider.curated_memory_status()
++                if status is not None:
++                    return status
++            except Exception as exc:
++                logger.debug("Memory provider '%s' curated status failed: %s", provider.name, exc)
++        return None
++
+     # Actions mirrored to external providers; non-mutating results (errors, staged) are
+     # filtered by ``notify_memory_tool_write`` first.
+     _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+diff --git a/agent/memory_provider.py b/agent/memory_provider.py
+index b5a9d2edc5..e22d4179a5 100644
+--- a/agent/memory_provider.py
++++ b/agent/memory_provider.py
+@@ -186,6 +186,36 @@ class MemoryProvider(ABC):
+         """Mirror a built-in memory-tool write (``action``: add | replace | remove; ``target``:
+         memory | user; ``metadata``: provenance such as write_origin, session_id, tool_name)."""
+ 
++    def create_native_memory_store(self, **kwargs):
++        """Optionally replace Hermes's file-backed native store with a compatible provider store.
++
++        Return ``None`` to retain MEMORY.md/USER.md.  A returned store must provide the
++        MemoryStore surface used by ``tools.memory_tool``.  The host calls this only after
++        provider initialization, once per agent/fork, and never silently falls back after
++        a provider opted into the canonical-store contract.
++        """
++        return None
++
++    def observe_tool_result(self, tool_name: str, args: Dict[str, Any], result: Any,
++                            metadata: Optional[Dict[str, Any]] = None) -> None:
++        """Best-effort terminal tool observation, including error results.
++
++        This is an observation hook, not part of tool execution: failures must never change
++        the tool result or interrupt the conversation.
++        """
++
++    def curated_memory_status(self) -> Optional[Dict[str, Any]]:
++        """Optional live status used by CLI, gateway and Desktop memory surfaces."""
++        return None
++
++    def dashboard_memory_status(self, hermes_home: str) -> Optional[Dict[str, Any]]:
++        """Optional uninitialized, read-only dashboard status for the active profile."""
++        return None
++
++    def dashboard_memory_reset(self, hermes_home: str, target: str) -> Optional[Dict[str, Any]]:
++        """Optional uninitialized targeted reset. Return None when unsupported."""
++        return None
++
+     def backup_paths(self) -> List[str]:
+         """Absolute paths of provider state OUTSIDE HERMES_HOME for ``hermes backup``/``import``
+         (paths outside the home dir are skipped). MUST work without ``initialize()`` or network."""
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+index 3fc5f6b8b5..77f36ebeb3 100644
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -689,6 +689,9 @@ def _dispatch_authorized_once(
+     return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+ 
+ 
++from agent.memory_bridge import agent_memory_scope
++
++@agent_memory_scope
+ def _run_agent_tool_execution_middleware(
+     agent,
+     *,
+diff --git a/cli.py b/cli.py
+index 8930152446..bcf616af0f 100644
+--- a/cli.py
++++ b/cli.py
+@@ -3832,6 +3832,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
+                 _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
+         return True
+ 
++    from agent.memory_bridge import local_memory_scope
++
++    @local_memory_scope
+     def run(self):
+         """Run the interactive CLI loop with persistent input at bottom."""
+         if not self._claim_active_session("cli"):
+@@ -4490,6 +4493,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
+         _finalize_single_query(cli)
+ 
+ 
++from agent.memory_bridge import local_memory_scope
++
++@local_memory_scope
+ def main(
+     query: str = None,
+     q: str = None,
+diff --git a/cron/notepad.py b/cron/notepad.py
+index 12fc7954c8..a5aee15f54 100644
+--- a/cron/notepad.py
++++ b/cron/notepad.py
+@@ -80,6 +80,8 @@ def set_note(job_id: str, key: str, value: str) -> Dict[str, Any]:
+     """Upsert one key. Raises ValueError when a size cap would be exceeded."""
+     job_id, key, value = str(job_id), str(key), str(value)
+     _validate(job_id, key, value)
++    from agent.memory_bridge import guard_notepad_change
++    guard_notepad_change(job_id, _list_notes_unchecked(job_id))
+     now = _hermes_now().isoformat()
+     with _transaction() as conn:
+         row = conn.execute(
+@@ -102,28 +104,28 @@ def set_note(job_id: str, key: str, value: str) -> Dict[str, Any]:
+                DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+             (job_id, key, value, now),
+         )
++    from agent.memory_bridge import commit_notepad_change
++    commit_notepad_change(job_id, _list_notes_unchecked(job_id))
+     return {"job_id": job_id, "key": key, "value": value, "updated_at": now}
+ 
+ 
+ def get_note(job_id: str, key: str) -> Optional[str]:
+-    with _transaction() as conn:
+-        row = conn.execute(
+-            "SELECT value FROM cron_notepad WHERE job_id=? AND key=?",
+-            (str(job_id), str(key)),
+-        ).fetchone()
+-    return None if row is None else row["value"]
++    return next((row['value'] for row in list_notes(job_id) if row['key']==str(key)),None)
+ 
+ 
+ def delete_note(job_id: str, key: str) -> bool:
++    from agent.memory_bridge import guard_notepad_change, commit_notepad_change
++    guard_notepad_change(str(job_id),_list_notes_unchecked(job_id))
+     with _transaction() as conn:
+         cur = conn.execute(
+             "DELETE FROM cron_notepad WHERE job_id=? AND key=?",
+             (str(job_id), str(key)),
+         )
++    commit_notepad_change(str(job_id),_list_notes_unchecked(job_id))
+     return cur.rowcount > 0
+ 
+ 
+-def list_notes(job_id: str) -> List[Dict[str, Any]]:
++def _list_notes_unchecked(job_id: str) -> List[Dict[str, Any]]:
+     """All entries for one job, sorted by key."""
+     with _transaction() as conn:
+         rows = conn.execute(
+@@ -134,9 +136,16 @@ def list_notes(job_id: str) -> List[Dict[str, Any]]:
+     return [dict(row) for row in rows]
+ 
+ 
++def list_notes(job_id: str) -> List[Dict[str, Any]]:
++    from agent.memory_bridge import filter_notepad_notes
++    return filter_notepad_notes(str(job_id), _list_notes_unchecked(job_id))
++
++
+ def clear_notepad(job_id: str) -> int:
+     """Delete every key for one job (called from ``cron.jobs.remove_job``). Returns row count;
+     no-ops without creating the DB when no notepad file exists yet."""
++    from agent.memory_bridge import retire_notepad
++    retire_notepad(str(job_id))
+     if not _current_notepad_file().exists():
+         return 0
+     with _transaction() as conn:
+@@ -146,11 +155,19 @@ def clear_notepad(job_id: str) -> int:
+     return cur.rowcount
+ 
+ 
+-def render_notepad_section(job_id: str) -> str:
++def render_notepad_section(job_id: str, *, memory_job=None) -> str:
+     """Render a job's notepad as a prompt section. An empty notepad MUST return '' so jobs that
+     never use the feature get a byte-identical prompt (prompt-cache + drift safety)."""
+     try:
+-        notes = list_notes(job_id)
++        if memory_job is None:
++            notes = list_notes(job_id)
++        else:
++            import json
++            from agent.memory_bridge import filter_cron_continuity
++            raw = _list_notes_unchecked(job_id)
++            filtered = filter_cron_continuity(
++                get_hermes_home(), memory_job, json.dumps(raw, sort_keys=True), "notepad")
++            notes = json.loads(filtered) if filtered else []
+     except Exception:
+         return ""
+     if not notes:
+diff --git a/cron/scheduler.py b/cron/scheduler.py
+index 3d745e1360..33972c9760 100644
+--- a/cron/scheduler.py
++++ b/cron/scheduler.py
+@@ -2183,6 +2183,11 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
+ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
+     runtime = setup.runtime
+     pr = _cfg.get("provider_routing") or {}
++    from agent.memory_bridge import cron_context
++    targets = _resolve_delivery_targets(job)
++    memory_context = cron_context(
++        _get_hermes_home(), job, str(job.get("execution_id") or ""), targets,
++        _normalize_deliver_value(job.get("deliver", "local")) == "local")
+     return AIAgent(
+         model=setup.model,
+         api_key=runtime.get("api_key"),
+@@ -2214,6 +2219,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
+         platform="cron",
+         session_id=session_id,
+         session_db=session_db,
++        memory_host_context=memory_context,
+     )
+ 
+ 
+@@ -2308,6 +2314,10 @@ def run_job(
+         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
+         logger.info("Job '%s' completed successfully", job_name)
+         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
++        from agent.memory_bridge import emit as emit_memory_event
++        emit_memory_event(agent, "cron_completed", {
++            "job_id": str(job_id), "run_id": str(job.get("execution_id") or ""),
++            "session_id": _cron_session_id, "success": True, "result": final_response})
+         return True, output, final_response, None
+ 
+     except Exception as e:
+@@ -2666,6 +2676,9 @@ def _save_compose_deliver(
+     with fence.side_effect_fence() as owns_output:
+         if not owns_output:
+             raise _FireClaimLostDuringSideEffect
++        from agent.memory_bridge import register_cron_artifact
++        for memory_agent in getattr(d, "memory_agents", ()):
++            register_cron_artifact(memory_agent, job["id"], output)
+         output_file = save_job_output(job["id"], output)
+     if verbose:
+         logger.info("Output saved to: %s", output_file)
+@@ -2719,6 +2732,8 @@ def _save_compose_deliver(
+         with fence.side_effect_fence() as owns_delivery:
+             if not owns_delivery:
+                 raise _FireClaimLostDuringSideEffect
++            for memory_agent in getattr(d, "memory_agents", ()):
++                register_cron_artifact(memory_agent, job["id"], deliver_content, "delivery")
+             d.delivery_attempted = True
+             d.delivery_error = _deliver_result(
+                 job,
+@@ -2943,6 +2958,7 @@ def _run_one_job_body(
+         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
+         # raise anywhere still tears the deferred agent down.
+         d = _RunDelivery(job=job, success=success, error=error)
++        d.memory_agents = tuple(_deferred_agents)
+         try:
+             _save_compose_deliver(
+                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
+diff --git a/cron/scheduler_delivery.py b/cron/scheduler_delivery.py
+index 90c02b331c..5ed5b60f90 100644
+--- a/cron/scheduler_delivery.py
++++ b/cron/scheduler_delivery.py
+@@ -1685,6 +1685,11 @@ def _deliver_result(
+     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
+     job.pop("_bot_chat_delivery_receipts", None)
+     targets = _resolve_delivery_targets(job, for_failure=for_failure)
++    from agent.memory_bridge import check_cron_delivery
++    try:
++        check_cron_delivery(_sched._get_hermes_home(), job, targets, content)
++    except Exception:
++        return "Memory delivery scope could not be verified; delivery withheld"
+     if not targets:
+         _record_delivery_verification(job, [])
+         return _unresolved_delivery_outcome(job, for_failure)
+diff --git a/cron/scheduler_prompt.py b/cron/scheduler_prompt.py
+index 586a791ded..eebcaeb910 100644
+--- a/cron/scheduler_prompt.py
++++ b/cron/scheduler_prompt.py
+@@ -110,6 +110,11 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
+                     latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]")
+             if not latest_output:
+                 continue  # silent skip — empty output
++            from agent.memory_bridge import filter_cron_continuity
++            latest_output = filter_cron_continuity(
++                _sched._get_hermes_home(), job, latest_output, "output", source_job_id)
++            if not latest_output:
++                continue
+             if is_self:
+                 prompt = _prepend_context_block(
+                     prompt, "Your previous run's output", _SELF_CONTEXT_INTRO, latest_output)
+@@ -246,7 +251,8 @@ def _build_job_prompt(
+ 
+     # Durable per-job notepad; empty renders as "" so unused → byte-identical prompt.
+     from cron import notepad as cron_notepad
+-    notepad_section = cron_notepad.render_notepad_section(str(job.get("id") or ""))
++    notepad_section = cron_notepad.render_notepad_section(
++        str(job.get("id") or ""), memory_job=job)
+     if notepad_section:
+         prompt = f"{notepad_section}{prompt}"
+         has_injected_data = True
+diff --git a/gateway/slash_commands.py b/gateway/slash_commands.py
+index 23ea8ad6ee..49b59954c5 100644
+--- a/gateway/slash_commands.py
++++ b/gateway/slash_commands.py
+@@ -835,18 +835,34 @@ class GatewaySlashCommandsMixin(
+         return t("gateway.btw.started", preview=preview)
+ 
+     async def _handle_memory_command(self, event: MessageEvent) -> str:
+-        """Handle /memory — review pending memory writes + toggle the approval gate. Entries are small
+-        enough to review inline, so the full flow works on every platform."""
++        """Handle /memory against the identity-scoped resident agent store."""
+         from hermes_cli.write_approval_commands import handle_pending_subcommand
+         from tools import write_approval as wa
+-        from tools.memory_tool import load_on_disk_store
+-        # Apply approved writes against a fresh on-disk store (the gateway has no long-lived agent;
+-        # the store persists to the same MEMORY/USER.md and honors the configured char limits).
++        args = event.get_command_args().strip().split()
++        agent = self._resident_agent_for(self._session_key_for_source(event.source))
++        store = getattr(agent, "_memory_store", None) if agent else None
++        manager = getattr(agent, "_memory_manager", None) if agent else None
++        sub = args[0].lower() if args else "show"
++        if sub in {"show", "status", "list"}:
++            state = manager.curated_memory_status() if manager else None
++            if state is not None:
++                return json.dumps(state, ensure_ascii=False, indent=2)
++            if store is not None:
++                lines = []
++                for target in ("memory", "user"):
++                    lines.append(f"{target} ({store._usage(target)}):")
++                    lines.extend(f"- {entry}" for entry in store._entries_for(target))
++                return "\n".join(lines)
++        if store is None:
++            from tools.memory_tool import get_builtin_memory_config, load_on_disk_store
++            if str(get_builtin_memory_config().get("store", "files")).lower() == "provider":
++                return "Canonical memory is unavailable for this identity/session. Send a normal message, then retry."
++            store = load_on_disk_store()
+         out = handle_pending_subcommand(
+-            wa.MEMORY, event.get_command_args().strip().split(), memory_store=load_on_disk_store(),
++            wa.MEMORY, args, memory_store=store,
+             set_mode_fn=self._write_approval_setter("memory", event))
+         return out if out is not None else (
+-            "Unknown /memory subcommand. Use: pending, approve <id>, reject <id>, approval <on|off>."
++            "Unknown /memory subcommand. Use: show, pending, approve <id>, reject <id>, approval <on|off>."
+         )
+ 
+     async def _handle_skills_command(self, event: MessageEvent) -> str:
+diff --git a/hermes_cli/cli_commands_mixin.py b/hermes_cli/cli_commands_mixin.py
+index bca45fcf51..d0a81ec5e8 100644
+--- a/hermes_cli/cli_commands_mixin.py
++++ b/hermes_cli/cli_commands_mixin.py
+@@ -1845,11 +1845,24 @@ class CLICommandsMixin:
+         handle_skills_slash(cmd, ChatConsole())
+ 
+     def _handle_memory_command(self, cmd: str):
+-        """Handle /memory slash command — pending review + approval-gate toggle."""
++        """Handle /memory — canonical status/view plus pending-write review."""
+         from hermes_cli.write_approval_commands import handle_pending_subcommand
+         from tools import write_approval as wa
+         args = cmd.strip().split()[1:]
+         store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
++        sub = args[0].lower() if args else "show"
++        if sub in {"show", "status", "list"}:
++            manager = getattr(getattr(self, "agent", None), "_memory_manager", None)
++            state = manager.curated_memory_status() if manager else None
++            if state is not None:
++                print(json.dumps(state, ensure_ascii=False, indent=2))
++                return
++            if store is not None:
++                for target in ("memory", "user"):
++                    print(f"  {target} ({store._usage(target)}):")
++                    for entry in store._entries_for(target):
++                        print(f"    - {entry}")
++                return
+         if store is None:
+             # No live agent store (e.g. Desktop GUI): use a fresh on-disk store, as the gateway
+             # does — same MEMORY/USER.md, same configured char limits.
+@@ -1857,13 +1870,15 @@ class CLICommandsMixin:
+             # (gateway/slash_commands.py): it persists to the same MEMORY/USER.md and creates MEMORY.md on
+             # the first approved write. Without this the shared handler returns "memory store unavailable".
+             # See #46783.
+-            from tools.memory_tool import load_on_disk_store
++            from tools.memory_tool import get_builtin_memory_config, load_on_disk_store
++            if str(get_builtin_memory_config().get("store", "files")).lower() == "provider":
++                return print("Canonical memory is unavailable until an authorized agent session is active.")
+             store = load_on_disk_store()
+         out = handle_pending_subcommand(
+             wa.MEMORY, args, memory_store=store,
+             set_mode_fn=lambda enabled: self._save_write_approval("memory", enabled))
+         print(out if out is not None else
+-              "Unknown /memory subcommand. Use: pending, approve <id>, reject <id>, approval <on|off>.")
++              "Unknown /memory subcommand. Use: show, pending, approve <id>, reject <id>, approval <on|off>.")
+ 
+     def _save_write_approval(self, subsystem: str, enabled: bool):
+         """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
+diff --git a/hermes_cli/cli_session_mixin.py b/hermes_cli/cli_session_mixin.py
+index 9912e1fb0d..99f5d014d8 100644
+--- a/hermes_cli/cli_session_mixin.py
++++ b/hermes_cli/cli_session_mixin.py
+@@ -542,6 +542,11 @@ class CLISessionMixin:
+             self.agent.session_start = self.session_start
+             self.agent.reasoning_config = self.reasoning_config
+             self.agent.reset_session_state()
++            _old_memory_store = getattr(self.agent, "_memory_store", None)
++            if getattr(_old_memory_store, "framework_backed", False):
++                # /new starts a new prompt-snapshot lifetime. A fork gets its own
++                # live lists/version instead of mutating the completed conversation's view.
++                self.agent._memory_store = _old_memory_store.fork()
+             if hasattr(self.agent, "_last_flushed_db_idx"):
+                 self.agent._last_flushed_db_idx = 0
+             if hasattr(self.agent, "_todo_store"):
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index a28d278996..ca83c891eb 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1223,6 +1223,9 @@ DEFAULT_CONFIG = {
+         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+         # Periodic built-in memory review; 0 when an external provider auto-extracts.
+         "nudge_interval": 10,
++        # "files" = MEMORY.md/USER.md; "provider" = an external provider that
++        # implements Hermes's canonical native-store contract.
++        "store": "files",
+         # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
+         # "mem0", "hindsight", "holographic", "retaindb", "byterover".
+         "provider": "",
+diff --git a/hermes_cli/web_routers/chat_ws.py b/hermes_cli/web_routers/chat_ws.py
+index f7d9c217d6..a8ea15b3b2 100644
+--- a/hermes_cli/web_routers/chat_ws.py
++++ b/hermes_cli/web_routers/chat_ws.py
+@@ -570,6 +570,7 @@ async def gateway_ws(ws: WebSocket) -> None:
+     await handle_ws(
+         ws,
+         auth_identity=getattr(ws, "_hermes_auth_identity", None),
++        memory_owner=getattr(ws, "_hermes_memory_owner", False) is True,
+         subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
+     )
+ 
+diff --git a/hermes_cli/web_routers/ops.py b/hermes_cli/web_routers/ops.py
+index 728bd4b4de..16cfd74ee8 100644
+--- a/hermes_cli/web_routers/ops.py
++++ b/hermes_cli/web_routers/ops.py
+@@ -454,7 +454,14 @@ async def get_memory_status():
+         for fname, key in _MEMORY_FILES:
+             path = mem_dir / fname
+             files[key] = path.stat().st_size if path.exists() else 0
+-        return {"active": active, "providers": _discover_memory_provider_statuses(), "builtin_files": files}
++        canonical = None
++        if active:
++            with suppress(Exception):
++                from plugins.memory import load_memory_provider
++                provider = load_memory_provider(active)
++                canonical = provider.dashboard_memory_status(str(get_hermes_home())) if provider else None
++        return {"active": active, "providers": _discover_memory_provider_statuses(),
++                "builtin_files": files, "canonical": canonical}
+ 
+     return await asyncio.to_thread(_run)
+ 
+@@ -482,6 +489,20 @@ async def reset_memory(body: MemoryReset):
+     if target not in {"all", "memory", "user"}:
+         raise HTTPException(status_code=400, detail="target must be all, memory, or user")
+ 
++    cfg = load_config()
++    mem_cfg = cfg.get("memory") if isinstance(cfg.get("memory"), dict) else {}
++    active = _normalize_memory_provider_name(mem_cfg.get("provider"))
++    if str(mem_cfg.get("store", "files")).lower() == "provider" and active:
++        try:
++            from plugins.memory import load_memory_provider
++            provider = load_memory_provider(active)
++            result = provider.dashboard_memory_reset(str(get_hermes_home()), target) if provider else None
++            if result is not None:
++                return result
++        except Exception as exc:
++            raise HTTPException(status_code=503, detail=f"Canonical memory reset failed: {exc}")
++        raise HTTPException(status_code=503, detail="Active memory provider does not support canonical reset")
++
+     mem_dir = get_hermes_home() / "memories"
+     deleted = []
+     for fname, key in _MEMORY_FILES:
+diff --git a/hermes_cli/web_server_chat.py b/hermes_cli/web_server_chat.py
+index 047bc867af..84d622a186 100644
+--- a/hermes_cli/web_server_chat.py
++++ b/hermes_cli/web_server_chat.py
+@@ -286,6 +286,8 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
+     if not token:
+         return "no_credential", "none"
+     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
++        peer = ws.client.host if ws.client else ""
++        ws._hermes_memory_owner = peer in {"127.0.0.1", "::1"}
+         return None, "token"
+     return "token_mismatch", "token"
+ 
+diff --git a/hermes_state.py b/hermes_state.py
+index 84aa323d98..66d6f44f3a 100644
+--- a/hermes_state.py
++++ b/hermes_state.py
+@@ -457,14 +457,14 @@ class SessionDB(
+             "SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash)"
+         )
+ 
+-    @staticmethod
+-    def _session_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
++    def _session_row_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+         data = dict(row)
+         if "_system_prompt_resolved" in data:
+             resolved = data.pop("_system_prompt_resolved")
+             if "system_prompt" in data:
+                 data["system_prompt"] = resolved
+-        return data
++        from agent.memory_bridge import filter_session_metadata
++        return filter_session_metadata(self.db_path, data)
+ 
+     @staticmethod
+     def _close_connection_quietly(conn: Optional[sqlite3.Connection]) -> None:
+diff --git a/hermes_state_messages.py b/hermes_state_messages.py
+index 4e7b96faa7..3c78f904ce 100644
+--- a/hermes_state_messages.py
++++ b/hermes_state_messages.py
+@@ -816,6 +816,8 @@ class SessionMessagesMixin:
+             rows = self._read_all(sql, params)
+             if latest:
+                 rows.reverse()
++        from agent.memory_bridge import filter_history
++        rows = filter_history(self.db_path, rows)
+         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
+ 
+     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
+@@ -843,8 +845,10 @@ class SessionMessagesMixin:
+             after_rows = conn.execute(
+                 "SELECT * FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
+                 (session_id, around_message_id, window)).fetchall()
++        from agent.memory_bridge import filter_history
++        visible_rows = filter_history(self.db_path, (*reversed(before_rows), *after_rows))
+         window_msgs = [self._row_to_message_dict(r, warn_context="get_messages_around", summary_flag=False)
+-                       for r in (*reversed(before_rows), *after_rows)]
++                       for r in visible_rows]
+         # before_rows includes the anchor itself.
+         return {"window": window_msgs, "messages_before": max(0, len(before_rows) - 1), "messages_after": len(after_rows)}
+ 
+@@ -945,6 +949,8 @@ class SessionMessagesMixin:
+         transcript on flush. ``_row_id`` is opt-in (gateway reactions); reasoning restored on assistant rows
+         only; ``api_content`` VERBATIM (no sanitize/strip) so replay keeps the provider prompt cache byte-stable."""
+         from hermes_state import _strip_background_review_harness, _strip_stale_tool_call_markers
++        from agent.memory_bridge import filter_history
++        rows = filter_history(self.db_path, rows)
+         messages = []
+         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
+         for row in rows:
+diff --git a/hermes_state_search.py b/hermes_state_search.py
+index 0cbdfeb37f..92fea6eee9 100644
+--- a/hermes_state_search.py
++++ b/hermes_state_search.py
+@@ -1020,6 +1020,8 @@ class SessionSearchMixin:
+             rows = self._search_messages_impl(
+                 query, source_filter=source_filter, exclude_sources=exclude_sources, role_filter=role_filter,
+                 limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields)
++            from agent.memory_bridge import filter_search
++            rows = filter_search(self.db_path, rows)
+             return rows
+         finally:
+             elapsed_ms = (time.time() - started) * 1000.0
+diff --git a/hermes_state_titles.py b/hermes_state_titles.py
+index 1305a2a22c..98adb7571b 100644
+--- a/hermes_state_titles.py
++++ b/hermes_state_titles.py
+@@ -130,7 +130,10 @@ class SessionTitlesMixin:
+     def get_session_title(self, session_id: str) -> Optional[str]:
+         """Get the title for a session, or None."""
+         row = self._read_one("SELECT title FROM sessions WHERE id = ?", (session_id,))
+-        return row["title"] if row else None
++        if not row:
++            return None
++        from agent.memory_bridge import filter_session_metadata
++        return filter_session_metadata(self.db_path, {"id": session_id, "title": row["title"]})["title"]
+ 
+     def get_session_title_source(self, session_id: str) -> Optional[str]:
+         """Get the provenance of a session's title, or None when untitled."""
+diff --git a/run_agent.py b/run_agent.py
+index 5744825cfa..5ed4dd2550 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -270,6 +270,7 @@ class AIAgent(
+         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
+         pass_session_id: bool = False, requested_provider: str = None,
+         capabilities: Dict[str, bool] | None = None,
++        memory_host_context=None,
+     ):
+         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
+         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
+diff --git a/tools/delegate_tool.py b/tools/delegate_tool.py
+index 272ae09718..daa3922d5a 100644
+--- a/tools/delegate_tool.py
++++ b/tools/delegate_tool.py
+@@ -204,6 +204,10 @@ def _build_child_agent(
+         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
+         max_spawn_depth=max_spawn, child_depth=child_depth,
+     )
++    from agent.memory_bridge import delegation_packet
++    memory_packet = delegation_packet(parent_agent, goal)
++    if memory_packet:
++        child_prompt += "\n\n" + memory_packet
+     parent_api_key = getattr(parent_agent, "api_key", None)
+     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
+         parent_api_key = parent_agent._client_kwargs.get("api_key")
+diff --git a/tools/session_search_tool.py b/tools/session_search_tool.py
+index 14ec9edc20..697c403c5c 100644
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -509,6 +509,12 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
+                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
+                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive") -> str:
+     """Run session search, closing DBs opened here. Positional order is frozen for old callers."""
++    from agent.memory_bridge import authorize_history
++    from hermes_constants import get_hermes_home
++    from pathlib import Path
++    db_path = getattr(db, "db_path", None)
++    authorize_history(
++        Path(db_path).resolve().parent if isinstance(db_path, (str, Path)) else get_hermes_home())
+     from hermes_state import format_session_db_unavailable
+     from hermes_state_registry import acquire, release_or_close
+     owned_dbs: List[Any] = []
+diff --git a/tools/skills_tool.py b/tools/skills_tool.py
+index 3e50e1ec7a..fe98c26c9d 100644
+--- a/tools/skills_tool.py
++++ b/tools/skills_tool.py
+@@ -538,6 +538,8 @@ def skill_view(
+             return error
+         try:  # read once — reused for platform check and main content
+             content = _read_skill_text(skill_md)
++            from agent.memory_bridge import verify_memory_skill
++            verify_memory_skill(skill_md, content)
+         except Exception as e:
+             return _fail(f"Failed to read skill '{name}': {e}")
+         _log_security_warnings(name, skill_md, content, all_dirs, active_skills_dir)
+diff --git a/tools/skills_tool_plugin.py b/tools/skills_tool_plugin.py
+index 043c3b0cfb..9cfccafa32 100644
+--- a/tools/skills_tool_plugin.py
++++ b/tools/skills_tool_plugin.py
+@@ -87,6 +87,10 @@ def _serve_skill_file(
+         return _fail(f"File '{file_path}' not found in skill '{label}'.", **listing)
+     try:
+         content = _read_skill_text(target)
++        manifest = skill_root / "SKILL.md"
++        if manifest.is_file():
++            from agent.memory_bridge import verify_memory_skill
++            verify_memory_skill(manifest, _read_skill_text(manifest))
+     except UnicodeDecodeError:
+         return _json({
+             "success": True, "name": label, "file": file_path, "is_binary": True,
+diff --git a/tui_gateway/ws.py b/tui_gateway/ws.py
+index 2f8d52c215..164bb31400 100644
+--- a/tui_gateway/ws.py
++++ b/tui_gateway/ws.py
+@@ -88,7 +88,7 @@ class WSTransport:
+     deadlock, so it detects that and fires-and-forgets. Loop-thread callers needing completion use ``write_async``."""
+ 
+     def __init__(self, ws: Any, loop: asyncio.AbstractEventLoop, *, peer: str = "unknown",
+-                 auth_identity: dict | None = None) -> None:
++                 auth_identity: dict | None = None, memory_owner: bool = False) -> None:
+         self._ws = ws
+         self._loop = loop
+         self._peer = peer
+@@ -96,6 +96,9 @@ class WSTransport:
+         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
+         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
+         self.auth_identity = auth_identity
++        # Server-stamped only after the loopback dashboard token is verified.
++        # RPC parameters can never grant local-owner memory access.
++        self.memory_owner = bool(memory_owner)
+         self._closed = False
+         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
+         # calling write(); the timer handle is only ever touched on the loop thread.
+@@ -262,7 +265,8 @@ class _SendFailed(Exception):
+     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
+ 
+ 
+-async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None) -> None:
++async def handle_ws(ws: Any, *, auth_identity: dict | None = None, memory_owner: bool = False,
++                    subprotocol: str | None = None) -> None:
+     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
+     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
+     authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None."""
+@@ -289,7 +293,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol:
+         _note_dashboard_client_activity(force=True)
+         _disable_nagle(ws)
+         _log.info("ws accepted peer=%s", peer)
+-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
++        transport = WSTransport(
++            ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity,
++            memory_owner=memory_owner)
+         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
+         skin_payload = await asyncio.to_thread(server.resolve_skin)
+         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy

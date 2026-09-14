@@ -1,41 +1,133 @@
 {
-  "release": "v2026.9.11",
-  "commit": "939e45c91d751fadd94dcd1b873ac3cb44846213",
-  "source_archive_sha256": "bf45fc6c40ad770e30dfa7677ee6804a24be1a7eab768b283a0883c64662d76e",
-  "anchors": {"pyproject.toml": "c71aa5bc9e437bac3b662fd04a4a7e121735ebc898373019a366d91e217e58a8"},
-  "files": {
-    "agent/agent_init.py": {"before": "67f9aef648bafc50a01c7974daf5d618f2fa53d1255c96b9973e4b185ea4cbb4", "after": "6c1871be2e042bf008676b7731b608384935c42a50f8ad20be4eb308e7a4e7ee"},
-    "agent/background_review.py": {"before": "51462721c5046ddc5299c7e6cab2e7e81a1dd1615ca34ee9d2fc7e60fa9e8161", "after": "21bc227b8a09c085ca7e8da8ba071688ea97ec7fc9dd14f62c5e5a4b81b09e9d"},
-    "agent/context_compressor.py": {"before": "29b12a7bb57bd76dadcbcfdfee470001f9b5b0b015b6eaa8801c7cfc6a6139d0", "after": "fce9cdc15ae847558df4ed22a0a00fef06a4564716702f5ca49f9d90360bab7a"},
-    "agent/inline_tool_executors.py": {"before": "d34da2580c24f8936ea5bd14c7729baee39ac37e69c7bf67e87ca5f87772a91c", "after": "06d321881613be1f1de4d68cbd31e721d7cfd3f4f3030577525669cbb0f741a9"},
-    "agent/memory_bridge.py": {"before": null, "after": "d8cd3e15914620bb31d5d9c3db16338cddcb87c5e8f79634e882c62a7d936acb"},
-    "agent/memory_manager.py": {"before": "f9dd2a85dc4121687cea5c46e1956fab92565125cf853a57e9e581ecb548f2dd", "after": "6f00ef9b446aa09d9babae767504e145fc66c21cc27ee10f71b6139cae067ee2"},
-    "agent/memory_provider.py": {"before": "506dffc93dbfa2b4bc925e504f694b730a9920d65c0babbfebda53946be16333", "after": "a888463570e35bd88524c2e3ab4ed921753862fd7ca93fd05cebdb61818fc064"},
-    "agent/tool_executor.py": {"before": "1610a0893588cbc067aaf84b3d019a683cd83ba0fdb92d69baf4f7b9e6d121b9", "after": "be9bb6778e11893df003f8712dd22beb016a6340191ea2f00e8adc366c64e1ee"},
-    "cli.py": {"before": "190259f7adf645bf94c9accb8fa9f3583db5d3e2dca7b79a1ef5ebbaddb57a76", "after": "9382b5d0502c0127c87463adcad4baf1daa2c274b01e4274c5ae69d0015a9f39"},
-    "cron/notepad.py": {"before": "f249cdf16a28523228a99aede7665e46c8d447ab24b561f67736cd5baf9802c1", "after": "9862373173ec6d42791e1ac3182501136027b7331c9455e531730e419c357801"},
-    "cron/scheduler.py": {"before": "11b409e4a472037033e529a29bcd6a2d5bff8690539d3bc8ceb3e3e1fe8a7105", "after": "2afdf1d7bdda093af41b57d0b5f53576165b4ca574b455df61375373b96159dd"},
-    "cron/scheduler_delivery.py": {"before": "1d489210e510dc9ee8795f189ab1201953509656c2c11d1c127a1346135347ee", "after": "087986866faecabf00214ab7b9fb02dd4e0e5f11d7357b178e499ed96ac065e8"},
-    "cron/scheduler_prompt.py": {"before": "e886f636b4f85008e4352043e2c2d8cf885711f497b8f0b92f94d98d98856f0d", "after": "29d5b2d72b6f069cf139df7637c681afc02175197265ab14dca6a110c1c16207"},
-    "gateway/slash_commands.py": {"before": "cb7a1b99575fb17913a27a3f97039aa98700acad88dba5f62bed314146ae64bd", "after": "815634729914796b5e617b2ade10712dba3a5eda541a9b025e20b99d777d5821"},
-    "hermes_cli/cli_commands_mixin.py": {"before": "e803531c9f52fd566a5baca05567b0aaef9360042de1412a128d83bb566d7186", "after": "892bc7f36a09551804eb40dda6285cf3e5d20eaf839d5600de4975ab42686024"},
-    "hermes_cli/cli_session_mixin.py": {"before": "67419ebfec0b160a2628f83cf630f09c9bb45c66a9127ef766f742beb0471cbf", "after": "0e2660011ae9f0a2b633ca963a4be674d15dbbef3ac7aa54b8b851d2c75e6d70"},
-    "hermes_cli/config_defaults.py": {"before": "bb3926a19337d2a37db9c7152b00680db8dad947c5332e94df75e40596c316f7", "after": "47a6df578a24a7347ab878ea98667c7d8f8d5b4992c2e5eec92c43932a78e49d"},
-    "hermes_cli/web_routers/chat_ws.py": {"before": "67231939f1e633d560379098edbeb4db9ef5d74b5c40058b0c17b4b1ad2d2015", "after": "100ad46394da9b8570f5b7d452aa063efccbd5010f705096fdb14bc677c376e2"},
-    "hermes_cli/web_routers/ops.py": {"before": "96ef80bb8c65a65b8ecaae15610fbd51f0418d79fe8a77a173aec2ecc16ff5e9", "after": "5b2c4348105a75dc2515ed6cb37f6449b1285fdc0aaa83bc337df438b58ee5bd"},
-    "hermes_cli/web_server_chat.py": {"before": "c510283bf6d84f35f5ec3722a6750cceecf493ab8b742263a13663f4408662fc", "after": "afcdac5cb22dcf14c46eebf795c570ea6a7c1f683abcdc147482f19886414912"},
-    "hermes_state.py": {"before": "c52560398cd5d3e284724dd6bda1cb72e8cb514b937a40ee32d7a8e2ebcd287a", "after": "1eae22affd73beafdc1731f37eff92859ae9215571aebb3bd34edbb30261f3ae"},
-    "hermes_state_messages.py": {"before": "1bb1500aba6e477594db27a50103abf86d0f67aa2be41fd940ab3f9537b7c7dd", "after": "2dfb4b2a82f237cf47e14ab2d07eaa32c7c0ad849f0da0f377ab7602eb277980"},
-    "hermes_state_search.py": {"before": "99369cfb36f79fb84a4adef24202d8261dd35c5991d5baf781557d143fb5bc4b", "after": "8b9597be6e81a93b36d9e77ac563beea77bb647f41411c4481df68fead4068f2"},
-    "hermes_state_titles.py": {"before": "060094b6d63eb67ce2628224139f119e60baab04814041ce3a2e87fc12ce74ea", "after": "1ce09f5905d6b1cca72df705b317fa0884679b4588eb6e266071b43a27e5f066"},
-    "run_agent.py": {"before": "11cc45fad98fd6e345f1895c54a8ff2277b46f89ea10a5c95a47a221d117b3d6", "after": "798595d35fcaccfe87055dad7465b8c2574c2ac67264b562397313bf273e3b12"},
-    "tools/delegate_tool.py": {"before": "d26cafcb5f90a5f544618d4db03467790b2c98d1e104bcebb975895a3cfed607", "after": "64b052717b44a767a0c3b7022d7ed6865fbdaf9fe63c2bcff7a78dd2a260ef7c"},
-    "tools/session_search_tool.py": {"before": "1db8ee90ae97e0b89caf07a9eadf43d4a428d26b3ed915eab4a9bacb177cf366", "after": "3b51231f1ac9e0166183a5a574e38b921947e53cfc68124484a68a81244a9244"},
-    "tools/skills_tool.py": {"before": "0f205b8c2d9266d272d8c6cae3d189b86a5aebce98f03b61605d266b65f9497c", "after": "32ea3b1f1e98db6fcf7e18eade3a97ada050c1b68c8505028f251102650dafc6"},
-    "tools/skills_tool_plugin.py": {"before": "59a4de0cffcf4991027d24fbebc68e35978badc3c0dc929a07cf954e4dc2335a", "after": "274c2f654e315f558f59662a457ff4f4560225b5826f7482262691789a710e96"},
-    "tui_gateway/ws.py": {"before": "0f890d06da6cd16d81cfd18216440a5297f7229862f91ea409510051dab583ea", "after": "73a758590f594277a6f99d7bfd64bf8894e331eaa06e81d472dcd8842c1bbdd7"}
+  "release": "v2026.9.14",
+  "commit": "345cd2b057a452236de401d3534b8502a7465e8d",
+  "source_archive_sha256": "47df72ebd3f9c96d806a94541163f7fe7d7ce5b84f85c1d3787e6dfeea1d7834",
+  "anchors": {
+    "pyproject.toml": "a674c321c63c3bfd9fa099fab5957a64092416f7771680b370a4d77e992744ba"
   },
-  "patch_sha256": "e02aee222f013bbc019fd18da496d41e647a6ff29ec8f3abbc8b1110d3ee87f1",
+  "files": {
+    "agent/agent_init.py": {
+      "before": "d1a1df8dc03a1381a9fd7591d4293e912fb1cb0fa2c1370f8c72a7500acb824a",
+      "after": "c17ce44457e8e184857732e6d45946ccf516b66f14d08e2781be1ab6265c43e2"
+    },
+    "agent/background_review.py": {
+      "before": "17551ad59cb5aa2d0a0da260de96eef3790fec786a6d0b8043ac8e8eb29d8651",
+      "after": "8a64be73ea1c7047bdb608f932bc42c7c96376ff33c87dc69304d612f546f551"
+    },
+    "agent/context_compressor.py": {
+      "before": "862980fa312eb9e5c68a5dac9ded9c654419447162cf90699dc997f1dab43cd4",
+      "after": "4e373b98c105a4472dbca5bd5296c7de31001098a73223cf02034b0b93744718"
+    },
+    "agent/inline_tool_executors.py": {
+      "before": "44bb82f4e38b487436151fb43b6ceb0868a63495df11ef40a7c8f94d240cc8ed",
+      "after": "f7e442bab889c25e4ec4d050e1cb337c72b5529002c5075400ee07a2cd924897"
+    },
+    "agent/memory_bridge.py": {
+      "before": null,
+      "after": "d8cd3e15914620bb31d5d9c3db16338cddcb87c5e8f79634e882c62a7d936acb"
+    },
+    "agent/memory_manager.py": {
+      "before": "bd688b6ceecaf63e737516d9a65d2e0db3c3a8c12d5d7ede26c415b609a2898a",
+      "after": "5e5edbfe0c32fdc48ebecd48c514713eab4598305631f34ad4cda4d31199cbb3"
+    },
+    "agent/memory_provider.py": {
+      "before": "959e19c95c2dafc9b74d53d1aeff19ee945a557520cf7623f4ecc355b22c180d",
+      "after": "f1fe9f9941d0bdaba67d9357cfd2d1112cae9d68fceb853b010e0e9b60036d20"
+    },
+    "agent/tool_executor.py": {
+      "before": "9634ebdc01b12591753fa9a1653f4aa8937edde7130175bbd69be8a0e5895ab7",
+      "after": "3bca871c919228ee6cf982da8635298d481df8e99b7334fa9e9fa5f2d3d2c0d7"
+    },
+    "cli.py": {
+      "before": "f660357c101629a0ebcd8f4ce6aa2d3874fcfe87de6ea4b1d121cc8b2746584f",
+      "after": "88027391a7545502f824f5223d19091b7e6c343d1683b6b7fac59b7f6bf6ecee"
+    },
+    "cron/notepad.py": {
+      "before": "1325b3bcd8a8e17ab80ce52656bb1cf7988414f7db9e8cd3364c0de1644a15a0",
+      "after": "bbf1efad311e185f7b55e3fc00f44ef35d999df75b210526056f8e3253eda4a5"
+    },
+    "cron/scheduler.py": {
+      "before": "df7b82c50485cece408264f3cd44dc910b6b2a7d319b6d138bd42e2cf7ba2e86",
+      "after": "04e39cafd3e36858f34e420076fc1115e813e148af7a052f6d754f437c88a541"
+    },
+    "cron/scheduler_delivery.py": {
+      "before": "43ea115bba07e6b789a1c8552dd606bd23e43ae6b80332844520e6510f44d96d",
+      "after": "d844fe1e5d1cc2a6aa20a952eafb94cd8ecf33e20841c8b061b62df0dae6e610"
+    },
+    "cron/scheduler_prompt.py": {
+      "before": "6f780a321e281088d9b247d9833c57a46e36c910ab3151d03e4fa54674918579",
+      "after": "2423df9612b7467d63f7e32ee457aade51eca2700b28087b12a600826eb1d0eb"
+    },
+    "gateway/slash_commands.py": {
+      "before": "25a30628ae426523941f6d2334231f03b20c0f0204907c3283b559bfd00d6350",
+      "after": "b22cb53d6aae1301e3b9ad5b9cb153458805e469261ea0496a95068c3e6cff7f"
+    },
+    "hermes_cli/cli_commands_mixin.py": {
+      "before": "cfb1d337652132fe33a8238baf467ffbc84d033e4b4ce9c6d5a523a7025b28ff",
+      "after": "7a384bfaacb569b1c9daf00248ebfb1ff2c7ab0dcc543318cacccf5b401651ea"
+    },
+    "hermes_cli/cli_session_mixin.py": {
+      "before": "5c93db0a8fd953ecd33612f061b17052bc0a5d634b67d3ea6f17f1755ffd36c0",
+      "after": "85bfb38a053bc8c8d5f53e5cd31fb7408b082d9f1d543ab5cb9f2cb6b69c641a"
+    },
+    "hermes_cli/config_defaults.py": {
+      "before": "dbb0bbeafc42d4586d02a291b4bb5606e566eb71c7d75c01644d696abe7c8bae",
+      "after": "1cd94ec6562ce396116152fc90eb963d37987c5db4684696a9f5e8203903f9d2"
+    },
+    "hermes_cli/web_routers/chat_ws.py": {
+      "before": "67231939f1e633d560379098edbeb4db9ef5d74b5c40058b0c17b4b1ad2d2015",
+      "after": "100ad46394da9b8570f5b7d452aa063efccbd5010f705096fdb14bc677c376e2"
+    },
+    "hermes_cli/web_routers/ops.py": {
+      "before": "ffc487221edba5b0cbfe8df71a969282e41ad92180406094abc609c79c427ab6",
+      "after": "6b2654c01e4a1fb05729541720c5b854f10899204a74549be64a30c76ca28639"
+    },
+    "hermes_cli/web_server_chat.py": {
+      "before": "c510283bf6d84f35f5ec3722a6750cceecf493ab8b742263a13663f4408662fc",
+      "after": "afcdac5cb22dcf14c46eebf795c570ea6a7c1f683abcdc147482f19886414912"
+    },
+    "hermes_state.py": {
+      "before": "c92415eeb6bba298ff9bd3f823a6c3f9f9ff762c32af5d058923a7ba740dd5ec",
+      "after": "223c2066f0bae38966d27652dfabc9e8bc0ea4c29eac7bbc4adb127636cd393b"
+    },
+    "hermes_state_messages.py": {
+      "before": "fa876714c022f42c8501b31aa0312b683667103428023e4aff4997f4d9908e51",
+      "after": "01f0bfd8ccb78b5ec9edbb52791166613b8c7ca4a57b07c192253531f76d3481"
+    },
+    "hermes_state_search.py": {
+      "before": "2978baa979021f651738a03eb61cb083b2303530c5c5c8024bffae1fa11b9e47",
+      "after": "a6b5572355743e3155eefa3dadeb9aafc29e62c065a38f18989b33fd41b1f6f6"
+    },
+    "hermes_state_titles.py": {
+      "before": "060094b6d63eb67ce2628224139f119e60baab04814041ce3a2e87fc12ce74ea",
+      "after": "1ce09f5905d6b1cca72df705b317fa0884679b4588eb6e266071b43a27e5f066"
+    },
+    "run_agent.py": {
+      "before": "dc125031d13e2a341eec473bcfcafce16c7356505dcbc560bec562b1ecaddc04",
+      "after": "32b182e18f53f870612aa0d66fadbb081457db9bdac1ad8615e018b5b8abdf7e"
+    },
+    "tools/delegate_tool.py": {
+      "before": "8d2d684eda36dfa2b8371da814522d9b08c686105969eef366d265ae6f9e50f2",
+      "after": "666cc1b0bda998836d9bd5cf59f76a252a9a7629a638a7ebd8f7a103fb7b6a7e"
+    },
+    "tools/session_search_tool.py": {
+      "before": "1db8ee90ae97e0b89caf07a9eadf43d4a428d26b3ed915eab4a9bacb177cf366",
+      "after": "3b51231f1ac9e0166183a5a574e38b921947e53cfc68124484a68a81244a9244"
+    },
+    "tools/skills_tool.py": {
+      "before": "1bec6a244ac61603b1adeb5599149a4097b68263458f63eafe55836415e5f3a0",
+      "after": "c358873e31ba14bd4c59c0d7b40db429c44a8aa09551690bdb5562acd7beae7c"
+    },
+    "tools/skills_tool_plugin.py": {
+      "before": "59a4de0cffcf4991027d24fbebc68e35978badc3c0dc929a07cf954e4dc2335a",
+      "after": "274c2f654e315f558f59662a457ff4f4560225b5826f7482262691789a710e96"
+    },
+    "tui_gateway/ws.py": {
+      "before": "b7086ddbab17ba2f0ef97f1bd71a3b845f3adcd8fd1acb703e1e89860d68733f",
+      "after": "66822fd793e31cfabb234c7f18ecc675444fb0bbe47525ca42c95081f27b9c6d"
+    }
+  },
+  "patch_sha256": "62477753ee31870614ceaedd39a4b0d3f17dd6d2413c75ac04e9abab574120c8",
   "host_memory_api": 2,
   "native_store_contract": 1,
   "framework_version": "0.8.0rc8"

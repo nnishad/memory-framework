@@ -1,7 +1,7 @@
 {
   "passed": true,
   "actual_SessionDB": true,
-  "hermes_tag": "v2026.9.11",
+  "hermes_tag": "v2026.9.14",
   "checks": [
     "actual SessionDB schema and append_message import with stable message identity",
     "native session/messages preserved by read-only synchronization",

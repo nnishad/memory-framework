@@ -89,8 +89,8 @@ with tempfile.TemporaryDirectory() as tmp:
         assert investigation['diagnostics']['unique_searches']==2
         from personal_memory.operations import doctor
         atomic_json(home/'personal-memory/host-runtime.json', {
-            'root': str(root), 'api': 2, 'release': 'v2026.9.11',
-            'commit': a.hermes_commit or '939e45c91d751fadd94dcd1b873ac3cb44846213'})
+            'root': str(root), 'api': 2, 'release': 'v2026.9.14',
+            'commit': a.hermes_commit or '345cd2b057a452236de401d3534b8502a7465e8d'})
         # The managed Hindsight worker may still be committing the turn above.
         # Readiness deliberately stays false until its durable queue converges.
         deadline=time.monotonic()+90
@@ -238,7 +238,7 @@ with tempfile.TemporaryDirectory() as tmp:
         manager.shutdown_all();process.terminate()
         try:process.wait(timeout=15)
         except subprocess.TimeoutExpired:process.kill();process.wait();raise
-report={'hermes_tag':'v2026.9.11','hermes_commit':a.hermes_commit or subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip(),
+report={'hermes_tag':'v2026.9.14','hermes_commit':a.hermes_commit or subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip(),
         'provider_contract_sha256':hashlib.sha256((root/'agent/memory_provider.py').read_bytes()).hexdigest(),
         'checks':checks,'passed':len(checks),'failed':0,
         'scope':'Actual release loader, MemoryManager, tool gate, context fence and live copied ASGI service. Agent tool-surface container is a SimpleNamespace; no AIAgent/LLM/desktop/gateway end-to-end run.',

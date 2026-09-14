@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix='hermes-history-runtime-') as temp:
     finally:
         native.close()
         case.doCleanups()
-report = {'passed': True, 'actual_SessionDB': True, 'hermes_tag': 'v2026.9.11',
+report = {'passed': True, 'actual_SessionDB': True, 'hermes_tag': 'v2026.9.14',
           'checks': checks, 'native_session_search_replaced': False, 'native_database_modified_by_connector': False}
 Path('docs/HERMES_NATIVE_HISTORY_RUNTIME.json').write_text(json.dumps(report, indent=2) + '\n')
 print(json.dumps(report, indent=2))
