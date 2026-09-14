@@ -235,3 +235,30 @@ opt-in flag, the shipped defaults in `personal_memory/retrieval.py` were flipped
 - **Live service:** not yet redeployed (the rerank was never deployed to the plugins copy in §9).
   Any deploy must pre-cache the model under `HF_HOME`, or set `PERSONAL_MEMORY_DISABLE_RERANK=1`
   on a box that should run model-free.
+
+## 11. Hermes in Podman — containerised run of the patched agent
+
+Attempted moving the Hermes agent from the WSL host process into a **Podman** container
+(podman 6.0.2, WSL `podman-machine-default`).
+
+- **It runs.** Both the official `nousresearch/hermes-agent:latest` image and a **patched**
+  derivative boot cleanly under Podman: the s6-overlay `/init` comes up (all `cont-init` exit 0,
+  `main-hermes` + `dashboard` supervised, `hermes` process stable, 58 skills synced).
+- **Gotcha 1 — networking.** The default bridge fails on this WSL setup
+  (`netavark … nftables error: "nft" did not return successfully`). Fix: `--network=host` for both
+  `podman run` and `podman build` (build RUN steps get a networked container too); Hermes' own
+  Linux compose already uses host networking.
+- **Gotcha 2 — cheap patched build.** The real `Dockerfile` is a heavy multi-stage build (compiles
+  SQLite, pulls Node, installs s6-overlay). Rather than rebuild it, a thin derivative
+  `FROM nousresearch/hermes-agent:latest` + `COPY` of the **30 manifest-declared patched files** onto
+  `/opt/hermes` reproduces the host-patch in seconds.
+- **Verified it is genuinely our integration:** `sha256sum /opt/hermes/agent/memory_bridge.py` inside
+  the built container = `d8cd3e15…6acb`, matching the `host-patch/manifest.json` "after" hash, and
+  `import agent.memory_bridge` succeeds in the running gateway.
+- **Blocker for a full live round-trip (not attempted — needs owner approval).** The memory service's
+  reference server binds **loopback only** (`create_server` rejects a non-loopback host) and **Ollama
+  listens on Windows 127.0.0.1**, while Podman runs in a **separate WSL distro** — so the container
+  cannot reach either without rebinding those services to a routable interface, a security-relevant
+  change to the running setup, deliberately left for an explicit go-ahead.
+
+  Scripts: `.e2e/140_hermes_overlay_prep.sh`, `.e2e/hermes-overlay/Dockerfile`, `.e2e/137_wsl_state.sh`.
