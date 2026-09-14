@@ -165,3 +165,44 @@ through the actual `/v1/ingest` → `/v1/search` path (keyword **FTS5** + fastem
 
   Driver scripts: `.e2e/127_live_op.py`, `.e2e/132_robust_demo.sh`, `.e2e/134_live_conflict.py`,
   `.e2e/133_live_toggle.sh` (and `.e2e/129_state_probe.sh`, `.e2e/130_diag.sh`, `.e2e/131_repro_startup.sh`).
+
+## 9. Retrieval optimisation #2 — learned cross-encoder re-ranking of the fused top-k
+
+The next research-flagged lever (after temporal consolidation) was a **learned reranker**:
+Reciprocal-Rank Fusion orders by channel agreement + term statistics, not by whether a
+passage actually *answers* the query, so a lexically-similar distractor that repeats the
+query's noun but carries no answer can outrank the passage that does.
+
+- **Feasibility (verified before coding).** Live WSL `memory-venv`: `torch 2.11.0+cu128`,
+  CUDA available on the RTX 5080, `sentence-transformers 6.0.1` with `CrossEncoder` importable.
+  No cross-encoder model was cached, so the feature lazy-loads one (default
+  `cross-encoder/ms-marco-MiniLM-L-6-v2`) only when enabled; declared as an explicit
+  `rerank` extra in `pyproject.toml` (it is otherwise only transitively present via Hindsight).
+- **Change** (`personal_memory/retrieval.py`): `_apply_rerank(query, ordered, scores)` runs
+  **after RRF fusion / entity filter and before the recency bonus**. It rescopes only the top
+  `rerank_window` (default 24) candidates by a cross-encoder (query, passage) score, min-max
+  normalised into a **[1, 2]** band so reranked hits stay above the fusion-only tail and the
+  downstream multiplicative recency bonus keeps a comparable scale. It **adds and drops no
+  evidence**, is **off by default** (`retrieval.rerank.enabled: false`), and **degrades silently
+  to the fusion order** on any import/model/scoring failure (`self.errors["rerank"]`).
+- **Benchmark** (`scripts/benchmark_rerank.py`, evidence in `docs/RERANK_BENCHMARK.json`):
+  keyword-only, deterministic, **recency disabled** so the only variable is the re-ranker. 7
+  adversarial cases (answer doc + a stronger-lexical distractor) + 3 already-correct guard cases:
+
+  | metric (target set) | rerank **off** | rerank **on** |
+  |---|---|---|
+  | recall@1 | 0.7143 | **1.0** |
+  | MRR | 0.8571 | **1.0** |
+  | nDCG@5 | 0.8946 | **1.0** |
+  | distractor-beats-answer | 2 | **0** |
+  | guard recall@1 (no-regression) | 1.0 | 1.0 |
+
+  Delta: **+0.286** recall@1, **+0.143** MRR on the adversarial set, distractor misorderings
+  **2 → 0**, with **zero** change to already-correct or guard cases.
+- **Regression:** full suite `python -m unittest discover -s tests` → **172 OK (skipped 21)**; three
+  new model-independent tests cover the disabled no-op, window-only reordering with tail
+  preservation, and graceful degradation (they inject a fake/raising reranker — no torch/network).
+- **Status:** implemented + benchmarked + tested, **source repo only**, opt-in and **not yet enabled
+  in the live service config** (the live service is running the Section 7/8 temporal change).
+  Deploy/enable would mirror §8 (sync `retrieval.py` to the plugins copy, add `retrieval.rerank`,
+  full-teardown restart) and is pending a go-ahead.

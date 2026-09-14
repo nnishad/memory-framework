@@ -1,0 +1,76 @@
+{
+  "title": "Cross-encoder relevance re-ranking benchmark",
+  "harness": "scripts/benchmark_rerank.py",
+  "retriever_under_test": "keyword_fts5_only (in-process, deterministic; recency disabled so the only variable is the re-ranker)",
+  "reranker": {
+    "code": "personal_memory/retrieval.py::_apply_rerank",
+    "default_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "opt_in_config": {"retrieval": {"rerank": {"enabled": true, "window": 24}}},
+    "default_state": "disabled (off unless config opts in); adds/drops no evidence; degrades to fusion order on any model/scoring failure"
+  },
+  "runtime": "WSL2 Ubuntu, memory-venv python 3.12.3, torch 2.11.0+cu128, RTX 5080, sentence-transformers 6.0.1",
+  "records": 17,
+  "target_cases": 7,
+  "guard_cases": 3,
+  "before": {
+    "label": "rerank_off",
+    "recall_at_1": 0.7143,
+    "mrr": 0.8571,
+    "ndcg_at_k": 0.8946,
+    "retrieved_but_not_first": 2,
+    "distractor_beats_answer": 2,
+    "guard_recall_at_1": 1.0
+  },
+  "after": {
+    "label": "rerank_on",
+    "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "recall_at_1": 1.0,
+    "mrr": 1.0,
+    "ndcg_at_k": 1.0,
+    "retrieved_but_not_first": 0,
+    "distractor_beats_answer": 0,
+    "guard_recall_at_1": 1.0
+  },
+  "delta": {
+    "recall_at_1": 0.2857,
+    "mrr": 0.1429,
+    "ndcg_at_k": 0.1054,
+    "distractor_beats_answer": "2 -> 0",
+    "guard_recall_at_1": "1.0 -> 1.0 (no regression)"
+  },
+  "regression": {
+    "full_unittest_suite": "Ran 172 tests OK (skipped=21)",
+    "new_tests": [
+      "tests/test_retrieval.py::test_rerank_is_disabled_and_a_noop_by_default",
+      "tests/test_retrieval.py::test_rerank_reorders_only_the_window_and_preserves_the_tail",
+      "tests/test_retrieval.py::test_rerank_degrades_to_fusion_order_when_scoring_fails"
+    ]
+  },
+  "cases": {
+    "before_rerank_off": [
+      {"kind": "rerank", "query": "What medication am I allergic to?", "expected": "a_penicillin", "rank": 1, "distractor_rank": 2, "retrieved": ["a_penicillin", "d_penicillin"]},
+      {"kind": "rerank", "query": "Who is my cardiologist?", "expected": "a_rao", "rank": 2, "distractor_rank": 1, "retrieved": ["d_rao", "a_rao"]},
+      {"kind": "rerank", "query": "Which language did I write my thesis in?", "expected": "a_julia", "rank": 1, "distractor_rank": 2, "retrieved": ["a_julia", "d_julia"]},
+      {"kind": "rerank", "query": "What is my home wifi network name?", "expected": "a_ssid", "rank": 2, "distractor_rank": 1, "retrieved": ["d_ssid", "a_ssid", "d_renew"]},
+      {"kind": "rerank", "query": "How long is my gym membership?", "expected": "a_renew", "rank": 1, "distractor_rank": 2, "retrieved": ["a_renew", "d_renew"]},
+      {"kind": "rerank", "query": "When is my grandmother's birthday?", "expected": "a_pass", "rank": 1, "distractor_rank": 2, "retrieved": ["a_pass", "d_pass"]},
+      {"kind": "rerank", "query": "What is the PIN for my office locker?", "expected": "a_pin", "rank": 1, "distractor_rank": 2, "retrieved": ["a_pin", "d_pin"]},
+      {"kind": "guard", "query": "What is my cat called?", "expected": "g_pepper", "rank": 1},
+      {"kind": "guard", "query": "Where is my December conference?", "expected": "g_tokyo", "rank": 1},
+      {"kind": "guard", "query": "What colour is my bicycle?", "expected": "g_bike", "rank": 1}
+    ],
+    "after_rerank_on": [
+      {"kind": "rerank", "query": "What medication am I allergic to?", "expected": "a_penicillin", "rank": 1, "distractor_rank": 2},
+      {"kind": "rerank", "query": "Who is my cardiologist?", "expected": "a_rao", "rank": 1, "distractor_rank": 2},
+      {"kind": "rerank", "query": "Which language did I write my thesis in?", "expected": "a_julia", "rank": 1, "distractor_rank": 2},
+      {"kind": "rerank", "query": "What is my home wifi network name?", "expected": "a_ssid", "rank": 1, "distractor_rank": 2},
+      {"kind": "rerank", "query": "How long is my gym membership?", "expected": "a_renew", "rank": 1, "distractor_rank": 2},
+      {"kind": "rerank", "query": "When is my grandmother's birthday?", "expected": "a_pass", "rank": 1, "distractor_rank": 2},
+      {"kind": "rerank", "query": "What is the PIN for my office locker?", "expected": "a_pin", "rank": 1, "distractor_rank": 2},
+      {"kind": "guard", "query": "What is my cat called?", "expected": "g_pepper", "rank": 1},
+      {"kind": "guard", "query": "Where is my December conference?", "expected": "g_tokyo", "rank": 1},
+      {"kind": "guard", "query": "What colour is my bicycle?", "expected": "g_bike", "rank": 1}
+    ]
+  },
+  "interpretation": "The fusion layer ranks by channel agreement and term statistics, not answer relevance, so a lexically-similar distractor that repeats the query noun but does not answer can outrank the passage that does. A learned cross-encoder over (query, passage) fixes exactly these cases (2/7 adversarial here) and leaves every already-correct and guard case untouched. Larger misordered top-k in a real multi-channel corpus would give a larger delta; the two synthetic channels (semantic, Hindsight) that also affect ordering are intentionally excluded here so the re-ranker is isolated."
+}

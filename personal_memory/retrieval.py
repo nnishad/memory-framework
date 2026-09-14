@@ -26,6 +26,11 @@ def _epoch(value):
     return parsed.timestamp()
 
 
+# Small, fast, MS MARCO-tuned cross-encoder used by the optional relevance re-ranker.
+# Override via config {"rerank": {"model": "..."}}.
+RERANK_DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+
 class Hybrid:
     def __init__(self, store, config=None, semantic=None, hindsight=None, start=True):
         self.store, self.config = store, config or {}
@@ -62,6 +67,23 @@ class Hybrid:
                         self.hindsight = Hindsight(store, cfg)
                 except Exception as error:
                     self.errors[name] = type(error).__name__ + ": initialization failed; check model/dependencies/configuration"
+        # Optional learned re-ranking of the fused top-k. Off unless {"rerank":{"enabled":true}},
+        # so shipped ordering is unchanged. It only reorders already-retrieved candidates and
+        # loads lazily; any model/import failure degrades silently to the fusion order.
+        rerank = self.config.get("rerank") or {}
+        self.reranker = None
+        try:
+            self.rerank_window = max(2, min(50, int(rerank.get("window", 24))))
+        except (TypeError, ValueError):
+            self.rerank_window = 24
+        if isinstance(rerank, dict) and rerank.get("enabled"):
+            try:
+                from sentence_transformers import CrossEncoder
+                options = {k: rerank[k] for k in ("device", "max_length") if k in rerank}
+                self.reranker = CrossEncoder(rerank.get("model", RERANK_DEFAULT_MODEL), **options)
+            except Exception as error:
+                self.reranker = None
+                self.errors["rerank"] = type(error).__name__ + ": reranker unavailable; using fusion order"
         if start:
             for component in (self.semantic,self.hindsight):
                 if component:
@@ -94,6 +116,9 @@ class Hybrid:
             result["capabilities"].append("semantic")
         if self.hindsight:
             result["capabilities"].append("hindsight_multistrategy")
+        if self.reranker is not None:
+            result["capabilities"].append("cross_encoder_rerank")
+            result["rerank"] = {"enabled": True, "model": self.config.get("rerank", {}).get("model", RERANK_DEFAULT_MODEL), "window": self.rerank_window}
         return result
 
     def _apply_recency(self, ordered, scores):
@@ -125,6 +150,44 @@ class Hybrid:
             return scores[rid] * (1.0 + self.temporal_weight * (0.5 ** (age_days / half)))
 
         return sorted(ordered, key=lambda rid: (-adjusted(rid), rid))
+
+    def _apply_rerank(self, query, ordered, scores):
+        """Reorder the fused top-k with a learned cross-encoder (query, passage) score.
+
+        Reciprocal-rank fusion reflects channel agreement and term statistics, not true
+        answer relevance, so a lexically-similar distractor can outrank the passage that
+        actually answers. Only the top ``rerank_window`` candidates are rescored; the tail
+        keeps its fusion order. This reorders and re-scores existing candidates only - it
+        never adds or drops evidence - and is a no-op when disabled or on any model or
+        scoring failure (graceful degradation to the fusion order).
+        """
+        if self.reranker is None or len(ordered) < 2:
+            return ordered, scores
+        window = list(ordered[:self.rerank_window])
+        texts = {}
+        with self.store.connect() as db:
+            for start in range(0, len(window), 200):
+                chunk = window[start:start + 200]
+                marks = ",".join("?" * len(chunk))
+                for row in db.execute("SELECT id, text FROM records WHERE id IN (" + marks + ")", chunk):
+                    texts[row["id"]] = row["text"] or ""
+        pairs = [(query, texts.get(rid, "")) for rid in window]
+        try:
+            logits = self.reranker.predict(pairs, convert_to_numpy=True, show_progress_bar=False)
+        except Exception as error:
+            self.errors["rerank"] = type(error).__name__ + ": reranking failed; using fusion order"
+            return ordered, scores
+        values = [float(x) for x in logits]
+        low, high = min(values), max(values)
+        span = (high - low) or 1.0
+        # Map into a [1, 2] band: reranked candidates stay above any fusion-only tail and
+        # keep a scale the downstream multiplicative recency bonus can combine with safely.
+        for rid, value in zip(window, values):
+            scores[rid] = 1.0 + (value - low) / span
+        chosen = set(window)
+        ranked = sorted(window, key=lambda rid: (-scores[rid], rid))
+        tail = [rid for rid in ordered if rid not in chosen]
+        return ranked + tail, scores
 
     def search(self, query, limit=8, entity_id=None, source=None, after=None, before=None,
                include_history=False, depth="balanced", queries=None, expand_entities=True):
@@ -217,6 +280,7 @@ class Hybrid:
         if entity_id:
             still_related=self.store.related_ids(entity_id)
             ordered=[rid for rid in ordered if rid in still_related]
+        ordered,scores=self._apply_rerank(query,ordered,scores)
         ordered=self._apply_recency(ordered,scores)
         episodes=[]
         # Rehydrate after external/network work: new tombstones cannot be returned

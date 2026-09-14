@@ -13,6 +13,7 @@ dependencies = ["hindsight-api-slim[embedded-db,local-onnx]==0.9.2", "hindsight-
 setup = ["PyYAML>=6"]
 production = ["PyYAML>=6", "uvicorn>=0.35,<1", "cryptography>=45", "jsonschema>=4.23,<5"]
 semantic = ["fastembed==0.8.0"]
+rerank = ["sentence-transformers>=3"]
 http-embeddings = ["numpy>=1.26"]
 ann = ["hnswlib==0.8.0"]
 

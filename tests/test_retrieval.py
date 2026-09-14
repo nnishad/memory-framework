@@ -108,6 +108,36 @@ class RetrievalTests(Fixture):
         window=[r["id"] for r in on.search("office",expand_entities=False,after=iso(3010),before=iso(1000))["episodes"]]
         self.assertEqual(window,[stale])  # an explicit time filter still overrides recency
 
+    def test_rerank_is_disabled_and_a_noop_by_default(self):
+        a,b=self.put(record(1,"alpha answer here"),record(2,"beta answer here"))
+        h=self.hybrid()
+        self.assertIsNone(h.reranker)  # no model unless config opts in; shipped ordering unchanged
+        self.assertEqual(h.rerank_window,24)
+        ordered,scores=h._apply_rerank("query",[a,b],{a:0.03,b:0.02})
+        self.assertEqual(ordered,[a,b])  # disabled re-ranker returns the fusion order untouched
+
+    def test_rerank_reorders_only_the_window_and_preserves_the_tail(self):
+        a,b,c=self.put(record(1,"alpha"),record(2,"beta"),record(3,"gamma"))
+        h=self.hybrid(); h.rerank_window=2
+        class Fake:
+            def predict(self,pairs,**kw):
+                return [1.0,0.0]  # first window item judged more relevant
+        h.reranker=Fake()
+        ordered,scores=h._apply_rerank("query",[a,b,c],{a:0.03,b:0.02,c:0.01})
+        self.assertEqual(ordered,[a,b,c])  # a>b within the window; c (outside window) keeps its place
+        self.assertAlmostEqual(scores[a],2.0); self.assertAlmostEqual(scores[b],1.0)
+        self.assertEqual(scores[c],0.01)  # out-of-window candidates are never rescored
+
+    def test_rerank_degrades_to_fusion_order_when_scoring_fails(self):
+        a,b=self.put(record(1,"alpha"),record(2,"beta"))
+        h=self.hybrid()
+        class Boom:
+            def predict(self,*args,**kwargs): raise RuntimeError("model exploded")
+        h.reranker=Boom()
+        ordered,scores=h._apply_rerank("query",[a,b],{a:0.03,b:0.02})
+        self.assertEqual(ordered,[a,b])  # failure keeps the fusion order, never aborts retrieval
+        self.assertIn("rerank",h.errors)
+
     def test_vector_chunk_recall_persistence_filters_and_tombstones(self):
         try: from personal_memory.semantic import SemanticIndex
         except ImportError: self.skipTest("numpy unavailable")
