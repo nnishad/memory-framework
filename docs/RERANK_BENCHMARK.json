@@ -5,8 +5,9 @@
   "reranker": {
     "code": "personal_memory/retrieval.py::_apply_rerank",
     "default_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
-    "opt_in_config": {"retrieval": {"rerank": {"enabled": true, "window": 24}}},
-    "default_state": "disabled (off unless config opts in); adds/drops no evidence; degrades to fusion order on any model/scoring failure"
+    "opt_out_config": {"retrieval": {"rerank": {"enabled": false}}},
+    "env_kill_switch": "PERSONAL_MEMORY_DISABLE_RERANK=1",
+    "default_state": "ENABLED BY DEFAULT now (E2E_REPORT.md section 10); this A/B was first captured while the feature was opt-in, so before=disabled / after=enabled are still a valid ordering contrast. Model loads lazily on first search; adds/drops no evidence; degrades to fusion order on any model/scoring failure"
   },
   "runtime": "WSL2 Ubuntu, memory-venv python 3.12.3, torch 2.11.0+cu128, RTX 5080, sentence-transformers 6.0.1",
   "records": 17,

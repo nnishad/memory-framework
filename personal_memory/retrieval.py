@@ -1,5 +1,6 @@
 """Progressive hybrid retrieval, RRF fusion, and canonical evidence hydration."""
 import math
+import os
 import threading
 import time
 from collections import defaultdict
@@ -31,24 +32,31 @@ def _epoch(value):
 RERANK_DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
+def _rerank_disabled_by_env():
+    """Operational kill-switch: PERSONAL_MEMORY_DISABLE_RERANK forces the (default-on)
+    learned re-ranker off without touching config - used for dependency-light test runs
+    and to run a GPU model-free instance; production defaults to enabled."""
+    return os.environ.get("PERSONAL_MEMORY_DISABLE_RERANK", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Hybrid:
     def __init__(self, store, config=None, semantic=None, hindsight=None, start=True):
         self.store, self.config = store, config or {}
         self.relevance = RelevanceGate(self.config.get("relevance"))
-        # Temporal consolidation: an optional, additive recency bonus on top of RRF so a
-        # current fact outranks a lexically-similar but superseded one. Disabled (weight 0)
-        # by default to keep shipped behaviour; enable via config {"temporal":{...}}.
+        # Temporal consolidation: an additive recency bonus on top of RRF so a current fact
+        # outranks a lexically-similar but superseded one. ENABLED by default (weight 1.0) as
+        # the standard behaviour; a deployment opts out with {"temporal":{"weight":0}}.
         temporal = self.config.get("temporal") or {}
         try:
-            self.temporal_weight = float(temporal.get("weight", 0.0))
+            self.temporal_weight = float(temporal.get("weight", 1.0))
         except (TypeError, ValueError):
-            self.temporal_weight = 0.0
+            self.temporal_weight = 1.0
         try:
             self.temporal_half_life = float(temporal.get("half_life_days", 365))
         except (TypeError, ValueError):
             self.temporal_half_life = 365.0
         if not math.isfinite(self.temporal_weight) or self.temporal_weight < 0:
-            self.temporal_weight = 0.0
+            self.temporal_weight = 1.0
         if not math.isfinite(self.temporal_half_life) or self.temporal_half_life <= 0:
             self.temporal_half_life = 365.0
         self.semantic, self.hindsight = semantic, hindsight
@@ -67,23 +75,23 @@ class Hybrid:
                         self.hindsight = Hindsight(store, cfg)
                 except Exception as error:
                     self.errors[name] = type(error).__name__ + ": initialization failed; check model/dependencies/configuration"
-        # Optional learned re-ranking of the fused top-k. Off unless {"rerank":{"enabled":true}},
-        # so shipped ordering is unchanged. It only reorders already-retrieved candidates and
-        # loads lazily; any model/import failure degrades silently to the fusion order.
+        # Learned re-ranking of the fused top-k. ENABLED by default as the standard behaviour;
+        # a deployment opts out with {"rerank":{"enabled":false}}. The model is built LAZILY on
+        # the first search (never at construction) so startup stays cheap and offline, and any
+        # import/model/scoring failure is permanent and silent - the fusion order stands. This
+        # keeps the feature dependency-free to import and safe where the model is unavailable.
         rerank = self.config.get("rerank") or {}
+        if not isinstance(rerank, dict):
+            rerank = {}
         self.reranker = None
+        self._rerank_enabled = bool(rerank.get("enabled", True)) and not _rerank_disabled_by_env()
+        self._rerank_failed = False
+        self.rerank_model = rerank.get("model", RERANK_DEFAULT_MODEL)
+        self.rerank_options = {k: rerank[k] for k in ("device", "max_length") if k in rerank}
         try:
             self.rerank_window = max(2, min(50, int(rerank.get("window", 24))))
         except (TypeError, ValueError):
             self.rerank_window = 24
-        if isinstance(rerank, dict) and rerank.get("enabled"):
-            try:
-                from sentence_transformers import CrossEncoder
-                options = {k: rerank[k] for k in ("device", "max_length") if k in rerank}
-                self.reranker = CrossEncoder(rerank.get("model", RERANK_DEFAULT_MODEL), **options)
-            except Exception as error:
-                self.reranker = None
-                self.errors["rerank"] = type(error).__name__ + ": reranker unavailable; using fusion order"
         if start:
             for component in (self.semantic,self.hindsight):
                 if component:
@@ -116,9 +124,10 @@ class Hybrid:
             result["capabilities"].append("semantic")
         if self.hindsight:
             result["capabilities"].append("hindsight_multistrategy")
-        if self.reranker is not None:
+        if self._rerank_enabled:
             result["capabilities"].append("cross_encoder_rerank")
-            result["rerank"] = {"enabled": True, "model": self.config.get("rerank", {}).get("model", RERANK_DEFAULT_MODEL), "window": self.rerank_window}
+            result["rerank"] = {"enabled": True, "model": self.rerank_model, "window": self.rerank_window,
+                                "loaded": self.reranker is not None, "unavailable": self._rerank_failed}
         return result
 
     def _apply_recency(self, ordered, scores):
@@ -151,6 +160,23 @@ class Hybrid:
 
         return sorted(ordered, key=lambda rid: (-adjusted(rid), rid))
 
+    def _ensure_reranker(self):
+        """Build the cross-encoder on first use. No-op when disabled or already resolved.
+
+        Any import/model failure is recorded once and made permanent (we do not retry per
+        query) so the fused ordering is preserved and startup never blocks on the model.
+        """
+        if not self._rerank_enabled or self._rerank_failed or self.reranker is not None:
+            return self.reranker
+        try:
+            from sentence_transformers import CrossEncoder
+            self.reranker = CrossEncoder(self.rerank_model, **self.rerank_options)
+        except Exception as error:
+            self.reranker = None
+            self._rerank_failed = True
+            self.errors["rerank"] = type(error).__name__ + ": reranker unavailable; using fusion order"
+        return self.reranker
+
     def _apply_rerank(self, query, ordered, scores):
         """Reorder the fused top-k with a learned cross-encoder (query, passage) score.
 
@@ -158,10 +184,13 @@ class Hybrid:
         answer relevance, so a lexically-similar distractor can outrank the passage that
         actually answers. Only the top ``rerank_window`` candidates are rescored; the tail
         keeps its fusion order. This reorders and re-scores existing candidates only - it
-        never adds or drops evidence - and is a no-op when disabled or on any model or
-        scoring failure (graceful degradation to the fusion order).
+        never adds or drops evidence - and is a no-op when explicitly disabled, when the
+        model cannot be loaded, or on any scoring failure (graceful degradation to fusion).
         """
-        if self.reranker is None or len(ordered) < 2:
+        if len(ordered) < 2:
+            return ordered, scores
+        reranker = self.reranker or self._ensure_reranker()
+        if reranker is None:
             return ordered, scores
         window = list(ordered[:self.rerank_window])
         texts = {}
@@ -173,7 +202,7 @@ class Hybrid:
                     texts[row["id"]] = row["text"] or ""
         pairs = [(query, texts.get(rid, "")) for rid in window]
         try:
-            logits = self.reranker.predict(pairs, convert_to_numpy=True, show_progress_bar=False)
+            logits = reranker.predict(pairs, convert_to_numpy=True, show_progress_bar=False)
         except Exception as error:
             self.errors["rerank"] = type(error).__name__ + ": reranking failed; using fusion order"
             return ordered, scores

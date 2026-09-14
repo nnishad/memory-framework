@@ -24,7 +24,11 @@ class Fixture(unittest.TestCase):
     def put(self,*records):
         return [r["id"] for r in self.store.ingest(list(records))["records"]]
     def hybrid(self,**kw):
-        h=Hybrid(self.store,start=False,**kw); self.addCleanup(h.close); return h
+        # Isolate the deterministic fusion/recency/gate path: the external learned re-ranker
+        # is exercised separately with an injected fake, so no real model is ever loaded here.
+        config=dict(kw.pop("config",None) or {})
+        rerank=dict(config.get("rerank") or {}); rerank.setdefault("enabled",False); config["rerank"]=rerank
+        h=Hybrid(self.store,config,start=False,**kw); self.addCleanup(h.close); return h
 
 
 class IdentityTests(Fixture):
@@ -91,30 +95,48 @@ class RetrievalTests(Fixture):
         self.assertEqual([r["id"] for r in result["episodes"]],[b])
         self.assertTrue(all(c["status"]=="active" for c in result["claims"]))
 
-    def test_recency_consolidation_prefers_current_fact_when_enabled(self):
+    def test_recency_consolidation_is_enabled_by_default(self):
         import datetime
         now=datetime.datetime.now(datetime.timezone.utc)
         iso=lambda days:(now-datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         stale,current=self.put(
             record(1,"office office office on Elm Street",when=iso(3000)),
             record(2,"my office is on Oak Street",when=iso(2)))
-        self.assertEqual(self.hybrid().temporal_weight,0.0)  # disabled by default; shipped behaviour unchanged
-        off=[r["id"] for r in self.hybrid().search("office",expand_entities=False)["episodes"]]
-        self.assertEqual(off[0],stale)  # naive rank fusion favours the higher-term-frequency stale fact
-        on=self.hybrid(config={"temporal":{"weight":1.0,"half_life_days":365}})
-        got=[r["id"] for r in on.search("office",expand_entities=False)["episodes"]]
+        self.assertEqual(self.hybrid().temporal_weight,1.0)  # enabled by default; no opt-in required
+        got=[r["id"] for r in self.hybrid().search("office",expand_entities=False)["episodes"]]
         self.assertEqual(got[0],current)  # bounded recency bonus surfaces current evidence without demoting relevance
         self.assertIn(stale,got)  # stale evidence stays fully retrievable, never suppressed
-        window=[r["id"] for r in on.search("office",expand_entities=False,after=iso(3010),before=iso(1000))["episodes"]]
+        off=self.hybrid(config={"temporal":{"weight":0.0}})
+        naive=[r["id"] for r in off.search("office",expand_entities=False)["episodes"]]
+        self.assertEqual(naive[0],stale)  # explicit opt-out restores the pure rank-fusion (stale-first) ordering
+        window=[r["id"] for r in self.hybrid().search("office",expand_entities=False,after=iso(3010),before=iso(1000))["episodes"]]
         self.assertEqual(window,[stale])  # an explicit time filter still overrides recency
 
-    def test_rerank_is_disabled_and_a_noop_by_default(self):
+    def test_rerank_is_enabled_by_default_and_lazy(self):
+        import os
+        saved=os.environ.pop("PERSONAL_MEMORY_DISABLE_RERANK",None)
+        try:
+            h=Hybrid(self.store,start=False); self.addCleanup(h.close)
+            self.assertTrue(h._rerank_enabled)  # production standard: on, no opt-in required
+            self.assertIsNone(h.reranker)  # but the model is never loaded at construction (startup stays cheap/offline)
+            self.assertEqual(h.rerank_window,24)
+        finally:
+            if saved is not None: os.environ["PERSONAL_MEMORY_DISABLE_RERANK"]=saved
+
+    def test_rerank_env_killswitch_forces_it_off(self):
+        import os
+        os.environ["PERSONAL_MEMORY_DISABLE_RERANK"]="1"
+        self.addCleanup(os.environ.pop,"PERSONAL_MEMORY_DISABLE_RERANK",None)
+        h=Hybrid(self.store,start=False); self.addCleanup(h.close)
+        self.assertFalse(h._rerank_enabled)  # operator/test override without any config change
+
+    def test_rerank_noops_when_explicitly_disabled(self):
         a,b=self.put(record(1,"alpha answer here"),record(2,"beta answer here"))
-        h=self.hybrid()
-        self.assertIsNone(h.reranker)  # no model unless config opts in; shipped ordering unchanged
-        self.assertEqual(h.rerank_window,24)
+        h=self.hybrid(config={"rerank":{"enabled":False}})
+        self.assertFalse(h._rerank_enabled)
         ordered,scores=h._apply_rerank("query",[a,b],{a:0.03,b:0.02})
-        self.assertEqual(ordered,[a,b])  # disabled re-ranker returns the fusion order untouched
+        self.assertEqual(ordered,[a,b])  # explicit opt-out returns the fusion order untouched
+        self.assertIsNone(h.reranker)  # and never builds a model
 
     def test_rerank_reorders_only_the_window_and_preserves_the_tail(self):
         a,b,c=self.put(record(1,"alpha"),record(2,"beta"),record(3,"gamma"))

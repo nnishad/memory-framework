@@ -202,7 +202,36 @@ query's noun but carries no answer can outrank the passage that does.
 - **Regression:** full suite `python -m unittest discover -s tests` → **172 OK (skipped 21)**; three
   new model-independent tests cover the disabled no-op, window-only reordering with tail
   preservation, and graceful degradation (they inject a fake/raising reranker — no torch/network).
-- **Status:** implemented + benchmarked + tested, **source repo only**, opt-in and **not yet enabled
-  in the live service config** (the live service is running the Section 7/8 temporal change).
-  Deploy/enable would mirror §8 (sync `retrieval.py` to the plugins copy, add `retrieval.rerank`,
-  full-teardown restart) and is pending a go-ahead.
+- **Status:** implemented + benchmarked + tested, **source repo only**. See §10 — the re-ranker
+  is now **enabled by default** (opt-out), but **not yet enabled in the live service config**
+  (the live service still runs the §7/8 temporal change over an un-synced retrieval copy).
+  Deploy would mirror §8 (sync `retrieval.py` to the plugins copy, full-teardown restart).
+
+## 10. Retrieval defaults — recency + cross-encoder rerank are now the standard path (no opt-in)
+
+Per the owner's direction that these improvements should be "the only way," not gated behind an
+opt-in flag, the shipped defaults in `personal_memory/retrieval.py` were flipped.
+
+- **Temporal recency** (`_apply_recency`): `retrieval.temporal.weight` now defaults to **1.0**
+  (was `0.0`). The bounded recency bonus applies unless a deployment explicitly sets
+  `{"temporal":{"weight":0}}`. Pure-Python, deterministic, adds/drops no evidence.
+- **Cross-encoder rerank** (`_apply_rerank`): now **enabled by default** (was off unless config
+  opted in). The model is loaded **lazily on the first search**, never at construction, so startup
+  stays cheap and offline; **any** import/model/scoring failure is recorded once and made
+  **permanent**, degrading silently to the fusion order. A deployment opts out with
+  `{"rerank":{"enabled":false}}` or the operational kill-switch env `PERSONAL_MEMORY_DISABLE_RERANK=1`.
+
+- **New default actually engages** (real WSL venv, `sentence-transformers` present, `.e2e/139_wsl_default_on.sh`):
+  a config-less `Hybrid(...)` reports `rerank_enabled_default: True`, `reranker_before_search: False`
+  (lazy), `reranker_loaded_after_search: True`, `status.rerank = {enabled: True, model:
+  cross-encoder/ms-marco-MiniLM-L-6-v2, window: 24, loaded: True, unavailable: False}`, `errors: {}`,
+  and the answering document ranks first; `temporal_weight_default: 1.0`.
+- **Regression:** full suite on Linux (`.e2e/138_wsl_regression.sh`, run with
+  `PERSONAL_MEMORY_DISABLE_RERANK=1` so deterministic tests never load a real model) → **174 OK
+  (skipped 21)**. The `test_retrieval` fixture isolates the external reranker; new tests cover the
+  enabled-by-default + lazy behaviour, the env kill-switch, and explicit opt-out. `benchmark_temporal.py`
+  / `benchmark_rerank.py` still pass an explicit weight/enabled, so their BEFORE/AFTER controls are
+  byte-for-byte unchanged.
+- **Live service:** not yet redeployed (the rerank was never deployed to the plugins copy in §9).
+  Any deploy must pre-cache the model under `HF_HOME`, or set `PERSONAL_MEMORY_DISABLE_RERANK=1`
+  on a box that should run model-free.
