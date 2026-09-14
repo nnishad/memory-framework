@@ -195,6 +195,54 @@ class RetrievalTests(Fixture):
         self.assertTrue(result["episodes"]); self.assertIn("hindsight",result["diagnostics"]["failures"])
 
 
+class GraphActivationTests(Fixture):
+    """HippoRAG-style multi-hop propagation is deterministic and dependency-free, so it is
+    tested directly against the entity graph rather than through a learned model."""
+    def chain(self):
+        # seed S --entity X--> bridge M --entity Y--> target T. S and T share no entity, so T
+        # is reachable only through the intermediate bridge (a genuine second hop).
+        s, m, t = self.put(
+            record(1, "the launch event ran smoothly"),
+            record(2, "an unrelated bridge note"),
+            record(3, "a distant conclusion far from the query"))
+        x = self.store.entity("topic", "EventX", record_id=s)["id"]
+        self.store.entity("topic", "EventX", entity_id=x, record_id=m)
+        y = self.store.entity("topic", "ThingY", record_id=m)["id"]
+        self.store.entity("topic", "ThingY", entity_id=y, record_id=t)
+        return s, m, t
+
+    def test_graph_multihop_is_enabled_by_default(self):
+        h = Hybrid(self.store, start=False); self.addCleanup(h.close)
+        self.assertTrue(h.graph_enabled)  # production standard: on, no opt-in required
+        self.assertEqual(h.graph_hops, 2)
+        self.assertIn("graph_multihop", h.status()["capabilities"])
+
+    def test_second_hop_bridge_is_reached_only_by_multi_hop(self):
+        s, m, t = self.chain()
+        two = {item["id"] for item in self.hybrid()._propagate_graph({s: 1.0}, None)}
+        self.assertIn(m, two)  # direct entity neighbour (one hop)
+        self.assertIn(t, two)  # reached only by diffusing through the bridge (two hops)
+        one = {item["id"] for item in self.hybrid(config={"graph": {"hops": 1}})._propagate_graph({s: 1.0}, None)}
+        self.assertIn(m, one)
+        self.assertNotIn(t, one)  # the previous one-hop behaviour never saw the far target
+
+    def test_propagation_respects_allowed_filter_and_degrades_when_disabled(self):
+        s, m, t = self.chain()
+        restricted = {item["id"] for item in self.hybrid()._propagate_graph({s: 1.0}, {s, m})}
+        self.assertNotIn(t, restricted)  # an entity_id/source filter still bounds the walk
+        off = self.hybrid(config={"graph": {"enabled": False}})
+        self.assertFalse(off.graph_enabled)
+        self.assertEqual(off._propagate_graph({s: 1.0}, None), [])  # graceful: no graph, no error
+
+    def test_hub_entity_degree_is_bounded(self):
+        seed = self.put(record(1, "central seed"))[0]
+        hub = self.store.entity("topic", "Hub", record_id=seed)["id"]
+        for i in range(2, 40):
+            self.store.entity("topic", "Hub", entity_id=hub, record_id=self.put(record(i, "fanout %d" % i))[0])
+        h = self.hybrid(); h.graph_entity_degree = 5
+        self.assertLessEqual(len(h._propagate_graph({seed: 1.0}, None)), 5)  # a hub cannot flood results
+
+
 class ImporterTests(Fixture):
     def test_whatsapp_multiline_android_ios_and_reimport(self):
         p=self.root/"chat.txt"

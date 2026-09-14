@@ -262,3 +262,36 @@ Attempted moving the Hermes agent from the WSL host process into a **Podman** co
   change to the running setup, deliberately left for an explicit go-ahead.
 
   Scripts: `.e2e/140_hermes_overlay_prep.sh`, `.e2e/hermes-overlay/Dockerfile`, `.e2e/137_wsl_state.sh`.
+
+## 12. Multi-hop graph activation — HippoRAG-style personalised PageRank (C)
+
+The last research-flagged retrieval lever (E2E_REPORT §7): replace the bounded **one-hop**
+entity expansion with **multi-hop** propagation over the `entity_links` record↔entity graph,
+enabled **by default** (no opt-in) per the standing directive.
+
+- **Mechanism** (`retrieval.py::Hybrid._propagate_graph`): personalised PageRank diffuses
+  relevance from the fused top-k seeds along shared entities, so a fact linked only through an
+  intermediate bridge (record→entity→record→entity→record) surfaces even when it shares no
+  entity with a direct hit. Bounded and safe by construction: degree caps (record 6 / entity 16)
+  stop a hub flooding, `hops=2`, damping 0.6 teleports back to seeds, ties break on id, and the
+  walk is pure SQL (no model) so it always degrades to the direct hits. Confirmed-identity
+  bridges are kept as a second bounded source; the whole thing replaces the old 0.25-weight
+  one-hop channel under one `graph_propagation` fusion channel (default weight 0.3).
+- **Default on + graceful.** `status()` advertises `graph_multihop` with no config; verified live
+  on the WSL venv: `Hybrid(store).graph_enabled True`, hops 2, `graph_multihop` present.
+- **Benchmark** (`scripts/benchmark_graph.py`, `docs/GRAPH_BENCHMARK.json`), keyword-only, reproduced
+  identically on the live GPU venv:
+  - **two-hop activation recall 0.0 (off / previous one-hop) → 1.0 (multi-hop)** — the headline: it
+    activates term-less bridges the one-hop expansion structurally cannot reach.
+  - one-hop activation stays 1.0 (strict superset, nothing lost); direct-answer recall stays 1.0
+    (never demotes a real answer).
+- **Honest gate boundary.** End-to-end `in_episodes` recall of a *purely* term-less bridge stays
+  **0.0**: the hard `RelevanceGate` accepts a hydrated candidate only on `lexical OR semantic≥0.5`,
+  so a record relevant *only* by graph structure is correctly refused at the answer surface (the
+  anti-hallucination guard). The propagation therefore enlarges the reachable candidate set and
+  enriches `connections` provenance; surfacing it end-to-end needs a gate-policy change that is
+  safety-relevant and was **deliberately not made here**.
+- **Regression:** full suite **178 tests OK (skipped 21)** on the WSL venv; 4 new model-independent
+  `GraphActivationTests` (default-on, 2-hop-vs-1-hop reach, allowed-filter/degrade, hub-degree bound).
+
+Code + tests + benchmark are in commit (this section's accompanying change); see `docs/GRAPH_BENCHMARK.json`.

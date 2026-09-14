@@ -1,0 +1,54 @@
+{
+  "title": "HippoRAG-style multi-hop graph activation benchmark",
+  "harness": "scripts/benchmark_graph.py",
+  "retriever_under_test": "keyword_fts5_only (in-process, deterministic; recency and the cross-encoder disabled so the only variable is the graph propagation). Reruns identically on the live WSL2 memory-venv (real numpy/fastembed, RTX 5080).",
+  "mechanism": {
+    "code": "personal_memory/retrieval.py::Hybrid._propagate_graph",
+    "description": "Bounded personalised PageRank over the record<->entity graph (entity_links). Seeds are the fused top-k records; relevance diffuses along shared entities so a fact linked only through an intermediate bridge (a different entity, or a record joining two entities) surfaces even when it shares no entity with a direct hit.",
+    "default_state": "ENABLED BY DEFAULT as the standard behaviour (the previous bounded one-hop entity expansion is subsumed). Damping 0.6, hops 2, channel weight 0.3, per-node degree caps (record 6 / entity 16) bound a hub, and ties break on id. Pure SQL with no external dependency, so it always degrades gracefully to the direct hits; confirmed-identity bridges are still folded in as a second bounded source.",
+    "opt_out_config": {"retrieval": {"graph": {"enabled": false}}},
+    "status_capability": "graph_multihop"
+  },
+  "runtime": "WSL2 Ubuntu, memory-venv python 3.12.3, torch 2.11.0+cu128, RTX 5080 (numbers reproduced identically on Windows CPython 3.13.13)",
+  "records": 9,
+  "two_hop_cases": 2,
+  "one_hop_guard_cases": 1,
+  "direct_guard_cases": 1,
+  "before": {
+    "label": "one_hop (previous bounded expansion, --mode onehop)",
+    "two_hop_activation_recall": 0.0,
+    "one_hop_activation_recall": 1.0,
+    "two_hop_in_episodes_recall": 0.0,
+    "direct_recall": 1.0
+  },
+  "feature_off": {
+    "label": "graph disabled (--mode off)",
+    "two_hop_activation_recall": 0.0,
+    "one_hop_activation_recall": 0.0,
+    "two_hop_in_episodes_recall": 0.0,
+    "direct_recall": 1.0
+  },
+  "after": {
+    "label": "multi-hop personalised PageRank, production default (--mode multi)",
+    "two_hop_activation_recall": 1.0,
+    "one_hop_activation_recall": 1.0,
+    "two_hop_in_episodes_recall": 0.0,
+    "direct_recall": 1.0
+  },
+  "delta": {
+    "two_hop_activation_recall": "0.0 -> 1.0 (multi-hop reaches term-less bridges the one-hop expansion cannot)",
+    "one_hop_activation_recall": "1.0 -> 1.0 (multi-hop is a strict superset; nothing is lost)",
+    "direct_recall": "1.0 -> 1.0 (the lever never demotes a direct answer)"
+  },
+  "relevance_gate_finding": "two_hop_in_episodes_recall stays 0.0 in every mode under the keyword-only harness. The hard RelevanceGate (relevance.py) accepts a hydrated candidate only on `lexical OR semantic>=0.5`, so a candidate activated purely by graph structure - sharing no query term and no embedding neighbourhood - is correctly refused at the answer surface. The propagation therefore enlarges the reachable CANDIDATE set (proven above) and enriches the `connections` provenance, but its end-to-end recall benefit is gated until a bridge is also lexically or semantically relevant. This is a deliberate anti-hallucination boundary, not a defect.",
+  "interpretation": "Rank fusion and vector/ANN channels only ever return records that already overlap the query by term or embedding. The only way to surface a fact relevant purely because of how it CONNECTS is graph propagation, and this benchmark shows two-hop personalised PageRank activating exactly those (0.0 -> 1.0) while remaining a strict superset of one-hop and never disturbing a direct answer. Realising the candidate-level activation at the final answer surface would require loosening the RelevanceGate to accept graph-provenanced bridges - a safety-relevant change to the anti-hallucination guard that was intentionally NOT made here.",
+  "regression": {
+    "full_unittest_suite": "Ran 178 tests OK (skipped=21) on the WSL2 memory-venv",
+    "new_tests": [
+      "tests/test_retrieval.py::GraphActivationTests::test_graph_multihop_is_enabled_by_default",
+      "tests/test_retrieval.py::GraphActivationTests::test_second_hop_bridge_is_reached_only_by_multi_hop",
+      "tests/test_retrieval.py::GraphActivationTests::test_propagation_respects_allowed_filter_and_degrades_when_disabled",
+      "tests/test_retrieval.py::GraphActivationTests::test_hub_entity_degree_is_bounded"
+    ]
+  }
+}

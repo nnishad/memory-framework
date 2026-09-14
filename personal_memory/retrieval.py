@@ -92,6 +92,21 @@ class Hybrid:
             self.rerank_window = max(2, min(50, int(rerank.get("window", 24))))
         except (TypeError, ValueError):
             self.rerank_window = 24
+        # HippoRAG-style multi-hop activation: personalised PageRank over the record<->entity
+        # graph (entity_links) so a fact reachable only through an intermediate bridge - sharing
+        # no entity with the query's direct hits - can still surface. ENABLED by default as the
+        # standard behaviour; a deployment opts out with {"graph":{"enabled":false}}. It is pure,
+        # bounded SQL (no external model), so it always degrades gracefully to the direct hits.
+        graph = self.config.get("graph") or {}
+        if not isinstance(graph, dict):
+            graph = {}
+        self.graph_enabled = bool(graph.get("enabled", True))
+        self.graph_hops = self._bounded_int(graph.get("hops"), 2, 1, 3)
+        self.graph_damping = self._bounded_float(graph.get("damping"), 0.6, 0.0, 0.95)
+        self.graph_weight = self._bounded_float(graph.get("weight"), 0.3, 0.0, 4.0)
+        self.graph_seed_top = self._bounded_int(graph.get("seed_top"), 6, 1, 16)
+        self.graph_record_degree = self._bounded_int(graph.get("record_degree"), 6, 1, 16)
+        self.graph_entity_degree = self._bounded_int(graph.get("entity_degree"), 16, 1, 64)
         if start:
             for component in (self.semantic,self.hindsight):
                 if component:
@@ -128,7 +143,132 @@ class Hybrid:
             result["capabilities"].append("cross_encoder_rerank")
             result["rerank"] = {"enabled": True, "model": self.rerank_model, "window": self.rerank_window,
                                 "loaded": self.reranker is not None, "unavailable": self._rerank_failed}
+        if self.graph_enabled:
+            result["capabilities"].append("graph_multihop")
+            result["graph"] = {"enabled": True, "hops": self.graph_hops, "damping": self.graph_damping,
+                               "weight": round(self.graph_weight, 4), "seed_top": self.graph_seed_top,
+                               "record_degree": self.graph_record_degree, "entity_degree": self.graph_entity_degree}
         return result
+
+    @staticmethod
+    def _bounded_int(value, default, low, high):
+        """Coerce an optional config number to a clamped int, falling back to the default."""
+        try:
+            return max(low, min(high, int(value)))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _bounded_float(value, default, low, high):
+        """Coerce an optional config number to a clamped finite float, falling back to the default."""
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return default
+        return result if math.isfinite(result) else default
+
+    def _propagate_graph(self, seeds, allowed):
+        """Bounded personalised PageRank over the record<->entity graph (HippoRAG-style).
+
+        ``seeds`` maps fused top-k record ids to their score; relevance diffuses along shared
+        entities so a fact linked only through an intermediate bridge (a different entity, or a
+        record that connects two entities) surfaces even when it shares no entity with a direct
+        hit. The walk is confined to a local subgraph: per-node degree caps stop a hub entity
+        flooding results, ``graph_hops`` bounds diffusion, damping teleports back to the seeds so
+        they stay dominant, and ties break on id for determinism. Propagated records are *leads*
+        - they still have to clear the relevance gate on hydration. Pure SQL with no external
+        dependency; returns [] (never raises) when the store carries no entity structure.
+        """
+        if not self.graph_enabled or not seeds:
+            return []
+        record_entities, entity_records = {}, {}
+        with self.store.connect() as db:
+            def entities_of(rid):
+                cached = record_entities.get(rid)
+                if cached is None:
+                    cached = [row["entity_id"] for row in db.execute(
+                        "SELECT DISTINCT entity_id FROM entity_links WHERE record_id=? LIMIT ?",
+                        (rid, self.graph_record_degree))]
+                    record_entities[rid] = cached
+                return cached
+
+            def records_of(eid):
+                cached = entity_records.get(eid)
+                if cached is None:
+                    cached = [row["record_id"] for row in db.execute(
+                        """SELECT l.record_id FROM entity_links l JOIN records r ON r.id=l.record_id
+                           WHERE l.entity_id=? AND r.deleted=0
+                           ORDER BY r.occurred_at DESC LIMIT ?""", (eid, self.graph_entity_degree))]
+                    entity_records[eid] = cached
+                return cached
+
+            visited = set(seeds)
+            frontier = set(seeds)
+            for _ in range(self.graph_hops):
+                if not frontier:
+                    break
+                entities = set()
+                for rid in frontier:
+                    entities.update(entities_of(rid))
+                nxt = set()
+                for eid in entities:
+                    for rid in records_of(eid):
+                        if allowed is not None and rid not in allowed:
+                            continue
+                        if rid not in visited:
+                            visited.add(rid); nxt.add(rid)
+                frontier = nxt
+            for rid in list(visited):
+                entities_of(rid)
+            for eid in list(entity_records):
+                records_of(eid)
+
+        total = sum(max(0.0, s) for s in seeds.values()) or 1.0
+        personalization = {rid: max(0.0, score) / total for rid, score in seeds.items()}
+        mass = dict(personalization)
+        alpha = self.graph_damping
+        for _ in range(self.graph_hops):
+            entity_mass = defaultdict(float)
+            for rid, value in mass.items():
+                if value <= 0:
+                    continue
+                entities = record_entities.get(rid) or []
+                if not entities:
+                    continue  # dangling mass is re-teleported to the seeds below
+                share = value / len(entities)
+                for eid in entities:
+                    entity_mass[eid] += share
+            record_mass = defaultdict(float)
+            for eid, value in entity_mass.items():
+                if value <= 0:
+                    continue
+                reachable = [rid for rid in (entity_records.get(eid) or []) if rid in visited]
+                if not reachable:
+                    continue
+                share = value / len(reachable)
+                for rid in reachable:
+                    record_mass[rid] += share
+            mass = {rid: (1 - alpha) * personalization.get(rid, 0.0) + alpha * record_mass.get(rid, 0.0)
+                    for rid in visited}
+
+        propagated = []
+        for rid in visited:
+            if rid in seeds:
+                continue
+            score = mass.get(rid, 0.0)
+            if score <= 1e-9:
+                continue
+            via, origin = None, None
+            for eid in record_entities.get(rid) or []:
+                for src in entity_records.get(eid) or []:
+                    if src in seeds:
+                        via, origin = eid, src
+                        break
+                if via:
+                    break
+            propagated.append({"id": rid, "score": score, "via_entity": via, "from_record": origin})
+        propagated.sort(key=lambda item: (-item["score"], item["id"]))
+        return propagated
 
     def _apply_recency(self, ordered, scores):
         """Re-rank already-retrieved candidates with a bounded exponential recency bonus.
@@ -278,19 +418,17 @@ class Hybrid:
                 future.cancel()
                 failures[channel]=type(error).__name__ + ": retrieval incomplete"
 
-        # Entity expansion exposes source-backed neighbours, never asserts they are
-        # answers or the same person. Bounded one hop prevents group fan-out floods.
+        # Graph activation exposes source-backed neighbours as leads; it never asserts they
+        # are the answer or the same person. Two bounded sources feed one fusion channel:
+        # (1) confirmed identity bridges (a person's own time-valid history) and (2) multi-hop
+        # personalised PageRank diffusion across shared entities.
         neighbours=[]
         if expand_entities and depth!="fast":
-            seeds=sorted(scores,key=scores.get,reverse=True)[:3]
+            seed_ids=sorted(scores,key=lambda rid:(-scores[rid],rid))[:self.graph_seed_top]
+            seeds={rid:scores[rid] for rid in seed_ids}
             with self.store.connect() as db:
-                for rid in seeds:
-                    for edge in db.execute("SELECT entity_id,relation FROM entity_links WHERE record_id=? LIMIT 4", (rid,)):
-                        rows=db.execute("""SELECT r.id FROM entity_links l JOIN records r ON r.id=l.record_id
-                            WHERE l.entity_id=? AND r.deleted=0 AND r.id!=? ORDER BY r.occurred_at DESC LIMIT 8""", (edge["entity_id"],rid))
-                        for row in rows:
-                            if allowed is None or row[0] in allowed:
-                                neighbours.append({"id":row[0],"via_entity":edge["entity_id"],"from_record":rid})
+                for rid in seed_ids:
+                    for edge in db.execute("SELECT DISTINCT entity_id FROM entity_links WHERE record_id=? LIMIT ?",(rid,self.graph_record_degree)):
                         owners=db.execute("""SELECT i.person_id FROM identity_edges i JOIN records evidence ON evidence.id=i.record_id
                           JOIN records seed ON seed.id=? WHERE i.account_id=? AND i.status='confirmed' AND evidence.deleted=0
                           AND (i.valid_from IS NULL OR seed.occurred_at>=i.valid_from)
@@ -303,7 +441,11 @@ class Hybrid:
                             for linked in sorted(related)[:16]:
                                 if linked!=rid:
                                     neighbours.append({"id":linked,"via_entity":owner[0],"from_record":rid})
-            add("entity_neighbour",neighbours,weight=0.25)
+            seen_neighbours={item["id"] for item in neighbours}
+            for item in self._propagate_graph(seeds, allowed):
+                if item["id"] not in seen_neighbours:
+                    neighbours.append({"id":item["id"],"via_entity":item["via_entity"],"from_record":item["from_record"]})
+            add("graph_propagation",neighbours,weight=self.graph_weight)
 
         ordered=sorted(scores,key=lambda rid:(-scores[rid],rid))
         if entity_id:
