@@ -1,17 +1,51 @@
 """Progressive hybrid retrieval, RRF fusion, and canonical evidence hydration."""
+import math
 import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from .common import required_text, timestamp
 from .relevance import RelevanceGate
+
+
+def _epoch(value):
+    """Parse an ISO occurred_at into epoch seconds; None when absent or unparseable."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 class Hybrid:
     def __init__(self, store, config=None, semantic=None, hindsight=None, start=True):
         self.store, self.config = store, config or {}
         self.relevance = RelevanceGate(self.config.get("relevance"))
+        # Temporal consolidation: an optional, additive recency bonus on top of RRF so a
+        # current fact outranks a lexically-similar but superseded one. Disabled (weight 0)
+        # by default to keep shipped behaviour; enable via config {"temporal":{...}}.
+        temporal = self.config.get("temporal") or {}
+        try:
+            self.temporal_weight = float(temporal.get("weight", 0.0))
+        except (TypeError, ValueError):
+            self.temporal_weight = 0.0
+        try:
+            self.temporal_half_life = float(temporal.get("half_life_days", 365))
+        except (TypeError, ValueError):
+            self.temporal_half_life = 365.0
+        if not math.isfinite(self.temporal_weight) or self.temporal_weight < 0:
+            self.temporal_weight = 0.0
+        if not math.isfinite(self.temporal_half_life) or self.temporal_half_life <= 0:
+            self.temporal_half_life = 365.0
         self.semantic, self.hindsight = semantic, hindsight
         self.errors, self.threads = {}, []
         self.stop = threading.Event()
@@ -61,6 +95,36 @@ class Hybrid:
         if self.hindsight:
             result["capabilities"].append("hindsight_multistrategy")
         return result
+
+    def _apply_recency(self, ordered, scores):
+        """Re-rank already-retrieved candidates with a bounded exponential recency bonus.
+
+        Rank-based fusion carries no notion of time, so a stale fact can tie or edge a
+        current one. The bonus is multiplicative on the RRF score and capped at
+        (1 + temporal_weight), demoting nothing and only ever preferring fresher, already
+        relevant evidence. Unknown or undated records keep their fusion rank.
+        """
+        if not ordered or self.temporal_weight <= 0:
+            return ordered
+        now = time.time()
+        half = self.temporal_half_life
+        ids = list(ordered)
+        times = {}
+        with self.store.connect() as db:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                marks = ",".join("?" * len(chunk))
+                for row in db.execute("SELECT id, occurred_at FROM records WHERE id IN (" + marks + ")", chunk):
+                    times[row["id"]] = row["occurred_at"]
+
+        def adjusted(rid):
+            stamp = _epoch(times.get(rid))
+            if stamp is None:
+                return scores[rid]
+            age_days = max(0.0, (now - stamp) / 86400.0)
+            return scores[rid] * (1.0 + self.temporal_weight * (0.5 ** (age_days / half)))
+
+        return sorted(ordered, key=lambda rid: (-adjusted(rid), rid))
 
     def search(self, query, limit=8, entity_id=None, source=None, after=None, before=None,
                include_history=False, depth="balanced", queries=None, expand_entities=True):
@@ -153,6 +217,7 @@ class Hybrid:
         if entity_id:
             still_related=self.store.related_ids(entity_id)
             ordered=[rid for rid in ordered if rid in still_related]
+        ordered=self._apply_recency(ordered,scores)
         episodes=[]
         # Rehydrate after external/network work: new tombstones cannot be returned
         # just because an older index or external engine still remembers the ID.

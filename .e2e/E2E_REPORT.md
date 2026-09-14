@@ -93,4 +93,37 @@ fixtures now cover three of the four listed gates:
 `95_direct_init.sh`, `99_clear_deadletters.sh` (doctor green) · `100_final_eval.sh` (30/30) ·
 `101_full_e2e.sh` (fresh recall/capture/cross-session/paraphrase) · `103_negative_test.sh`
 (abstention) · `105_autoinit_test.sh` (CLI does not self-attest — by design, see `smoke_release.py:46`) ·
-`106/108` (patch + native-history fixtures) · `107` (release smoke + load/recovery) · `109` (final doctor green).
+`106/108` (patch + native-history fixtures) · `107` (release smoke + load/recovery) · `109` (final doctor green) ·
+`117–125` (retrieval optimisation: benchmark authoring, BEFORE/AFTER runs, full unittest, evidence merge).
+
+## 7. Retrieval optimisation — temporal consolidation (research → implement → benchmark)
+
+Motivated by the 2025–2026 agent-memory literature (Generative-Agents relevance×recency×
+importance; Zep/Graphiti temporal validity; Hindsight recency boost): the fusion layer used
+**pure Reciprocal Rank Fusion with no notion of time**, so a *stale* fact that is an equal-or-
+stronger lexical match could outrank the *current* fact — the documented #1 production failure
+for long-running agents.
+
+- **Change** (`personal_memory/retrieval.py`): `_apply_recency()` adds a **bounded, additive**
+  exponential recency bonus `score × (1 + weight · 0.5^(age_days/half_life))` after RRF fusion
+  and before hydration. It **demotes nothing** (only prefers fresher, already-relevant evidence),
+  keeps undated records at their fusion rank, and is **off by default** (`retrieval.temporal.weight: 0`),
+  so shipped behaviour is unchanged unless a deployment opts in.
+- **Benchmark** (`scripts/benchmark_temporal.py`, evidence in `docs/TEMPORAL_BENCHMARK.json`):
+  keyword-only, deterministic, isolating temporal precedence (not semantic gap-bridging). On 7
+  current-vs-stale conflicts with single-fact and explicit-time-filter regression guards:
+
+  | run | current recall@1 | current MRR | stale-outranks-current | single-fact@1 | historical@1 |
+  |---|---|---|---|---|---|
+  | BEFORE (RRF only) | 0.1429 | 0.5714 | 6/7 | 1.0 | 1.0 |
+  | AFTER, feature **off** (parity) | 0.1429 | 0.5714 | 6/7 | 1.0 | 1.0 |
+  | AFTER, feature **on** (w=1.0, hl=365d) | **1.0** | **1.0** | **0/7** | 1.0 | 1.0 |
+
+  Delta: **+0.857** current-state recall@1, **+0.429** MRR, stale misrankings **6 → 0**, with **zero
+  regression** on the guards; the disabled run is byte-identical to baseline (behaviour-neutral).
+- **Regression:** full suite `python -m unittest discover -s tests` → **168 OK (skipped 21)**; new
+  deterministic test `tests/test_retrieval.py::test_recency_consolidation_prefers_current_fact_when_enabled`
+  passes 3/3 runs.
+- **Conclusion:** the framework **is** optimisable and this optimisation measurably helps. Follow-on
+  candidates (each needing the same benchmark-before/after discipline): learned cross-encoder rerank
+  of the fused top-k, recency/importance in the base score, and HippoRAG-style multi-hop activation.

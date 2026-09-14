@@ -91,6 +91,23 @@ class RetrievalTests(Fixture):
         self.assertEqual([r["id"] for r in result["episodes"]],[b])
         self.assertTrue(all(c["status"]=="active" for c in result["claims"]))
 
+    def test_recency_consolidation_prefers_current_fact_when_enabled(self):
+        import datetime
+        now=datetime.datetime.now(datetime.timezone.utc)
+        iso=lambda days:(now-datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stale,current=self.put(
+            record(1,"office office office on Elm Street",when=iso(3000)),
+            record(2,"my office is on Oak Street",when=iso(2)))
+        self.assertEqual(self.hybrid().temporal_weight,0.0)  # disabled by default; shipped behaviour unchanged
+        off=[r["id"] for r in self.hybrid().search("office",expand_entities=False)["episodes"]]
+        self.assertEqual(off[0],stale)  # naive rank fusion favours the higher-term-frequency stale fact
+        on=self.hybrid(config={"temporal":{"weight":1.0,"half_life_days":365}})
+        got=[r["id"] for r in on.search("office",expand_entities=False)["episodes"]]
+        self.assertEqual(got[0],current)  # bounded recency bonus surfaces current evidence without demoting relevance
+        self.assertIn(stale,got)  # stale evidence stays fully retrievable, never suppressed
+        window=[r["id"] for r in on.search("office",expand_entities=False,after=iso(3010),before=iso(1000))["episodes"]]
+        self.assertEqual(window,[stale])  # an explicit time filter still overrides recency
+
     def test_vector_chunk_recall_persistence_filters_and_tombstones(self):
         try: from personal_memory.semantic import SemanticIndex
         except ImportError: self.skipTest("numpy unavailable")

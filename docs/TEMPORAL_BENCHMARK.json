@@ -1,0 +1,351 @@
+{
+  "title": "Temporal-consolidation retrieval optimisation: before/after evidence",
+  "harness": "scripts/benchmark_temporal.py",
+  "scope": "Measures temporal PRECEDENCE inside the rank-based fusion path using keyword-only retrieval (no embedding/GPU), so both the current and stale fact are always candidates and only recency can flip the order. It does NOT measure semantic gap-bridging (a separate axis handled by the fastembed/Hindsight engines). Synthetic, dependency-free, deterministic.",
+  "records": 17,
+  "enabled_config": {
+    "retrieval.temporal": {
+      "weight": 1.0,
+      "half_life_days": 365
+    }
+  },
+  "runs": {
+    "before_baseline": {
+      "current_state_recall_at_1": 0.1429,
+      "current_state_mrr": 0.5714,
+      "stale_outranks_current_count": 6,
+      "single_fact_recall_at_1": 1.0,
+      "historical_recall_at_1": 1.0
+    },
+    "after_optimisation_disabled_weight0": {
+      "current_state_recall_at_1": 0.1429,
+      "current_state_mrr": 0.5714,
+      "stale_outranks_current_count": 6,
+      "single_fact_recall_at_1": 1.0,
+      "historical_recall_at_1": 1.0
+    },
+    "after_optimisation_enabled": {
+      "current_state_recall_at_1": 1.0,
+      "current_state_mrr": 1.0,
+      "stale_outranks_current_count": 0,
+      "single_fact_recall_at_1": 1.0,
+      "historical_recall_at_1": 1.0
+    }
+  },
+  "delta_enabled_vs_baseline": {
+    "current_state_recall_at_1": 0.8571,
+    "current_state_mrr": 0.4286
+  },
+  "regressions": {
+    "single_fact_recall_at_1": true,
+    "historical_recall_at_1": true
+  },
+  "behaviour_neutral_when_disabled": true,
+  "test_suite": "python -m unittest discover -s tests -> Ran 168 tests OK (skipped=21); new test tests/test_retrieval.py::test_recency_consolidation_prefers_current_fact_when_enabled passes 3/3 deterministically",
+  "cases_enabled": [
+    {
+      "kind": "current",
+      "query": "Where is my office?",
+      "expected": "office_new",
+      "stale": "office_old",
+      "retrieved": [
+        "office_new",
+        "office_old"
+      ],
+      "rank": 1,
+      "stale_rank": 2,
+      "elapsed_ms": 2.97
+    },
+    {
+      "kind": "current",
+      "query": "What is my phone number?",
+      "expected": "phone_new",
+      "stale": "phone_old",
+      "retrieved": [
+        "phone_new",
+        "phone_old"
+      ],
+      "rank": 1,
+      "stale_rank": 2,
+      "elapsed_ms": 2.5
+    },
+    {
+      "kind": "current",
+      "query": "Which city do I live in?",
+      "expected": "city_new",
+      "stale": "city_old",
+      "retrieved": [
+        "city_new",
+        "city_old"
+      ],
+      "rank": 1,
+      "stale_rank": 2,
+      "elapsed_ms": 2.61
+    },
+    {
+      "kind": "current",
+      "query": "Who do I work for?",
+      "expected": "job_new",
+      "stale": "job_old",
+      "retrieved": [
+        "job_new",
+        "job_old"
+      ],
+      "rank": 1,
+      "stale_rank": 2,
+      "elapsed_ms": 2.55
+    },
+    {
+      "kind": "current",
+      "query": "What car do I have?",
+      "expected": "car_new",
+      "stale": "car_old",
+      "retrieved": [
+        "car_new",
+        "car_old"
+      ],
+      "rank": 1,
+      "stale_rank": 2,
+      "elapsed_ms": 2.7
+    },
+    {
+      "kind": "current",
+      "query": "Which gym do I go to?",
+      "expected": "gym_new",
+      "stale": "gym_old",
+      "retrieved": [
+        "gym_new",
+        "gym_old"
+      ],
+      "rank": 1,
+      "stale_rank": 2,
+      "elapsed_ms": 2.41
+    },
+    {
+      "kind": "current",
+      "query": "What is my wifi password?",
+      "expected": "wifi_new",
+      "stale": "wifi_old",
+      "retrieved": [
+        "wifi_new",
+        "wifi_old"
+      ],
+      "rank": 1,
+      "stale_rank": 2,
+      "elapsed_ms": 4.38
+    },
+    {
+      "kind": "single",
+      "query": "Where is my passport stored?",
+      "expected": "passport",
+      "stale": null,
+      "retrieved": [
+        "passport"
+      ],
+      "rank": 1,
+      "stale_rank": null,
+      "elapsed_ms": 3.52
+    },
+    {
+      "kind": "single",
+      "query": "What allergy do I have?",
+      "expected": "allergy",
+      "stale": null,
+      "retrieved": [
+        "allergy"
+      ],
+      "rank": 1,
+      "stale_rank": null,
+      "elapsed_ms": 2.68
+    },
+    {
+      "kind": "single",
+      "query": "What is my cat called?",
+      "expected": "pet",
+      "stale": null,
+      "retrieved": [
+        "pet"
+      ],
+      "rank": 1,
+      "stale_rank": null,
+      "elapsed_ms": 2.4
+    },
+    {
+      "kind": "historical",
+      "query": "Where was my office in 2022?",
+      "expected": "office_old",
+      "stale": "office_new",
+      "retrieved": [
+        "office_old"
+      ],
+      "rank": 1,
+      "stale_rank": null,
+      "elapsed_ms": 2.62
+    },
+    {
+      "kind": "historical",
+      "query": "What was my phone number in 2021?",
+      "expected": "phone_old",
+      "stale": "phone_new",
+      "retrieved": [
+        "phone_old"
+      ],
+      "rank": 1,
+      "stale_rank": null,
+      "elapsed_ms": 4.29
+    }
+  ],
+  "cases_baseline": [
+    {
+      "kind": "current",
+      "query": "Where is my office?",
+      "expected": "office_new",
+      "stale": "office_old",
+      "retrieved": [
+        "office_old",
+        "office_new"
+      ],
+      "rank": 2,
+      "stale_rank": 1,
+      "elapsed_ms": 2.59
+    },
+    {
+      "kind": "current",
+      "query": "What is my phone number?",
+      "expected": "phone_new",
+      "stale": "phone_old",
+      "retrieved": [
+        "phone_old",
+        "phone_new"
+      ],
+      "rank": 2,
+      "stale_rank": 1,
+      "elapsed_ms": 2.06
+    },
+    {
+      "kind": "current",
+      "query": "Which city do I live in?",
+      "expected": "city_new",
+      "stale": "city_old",
+      "retrieved": [
+        "city_old",
+        "city_new"
+      ],
+      "rank": 2,
+      "stale_rank": 1,
+      "elapsed_ms": 2.48
+    },
+    {
+      "kind": "current",
+      "query": "Who do I work for?",
+      "expected": "job_new",
+      "stale": "job_old",
+      "retrieved": [
+        "job_old",
+        "job_new"
+      ],
+      "rank": 2,
+      "stale_rank": 1,
+      "elapsed_ms": 4.06
+    },
+    {
+      "kind": "current",
+      "query": "What car do I have?",
+      "expected": "car_new",
+      "stale": "car_old",
+      "retrieved": [
+        "car_new",
+        "car_old"
+      ],
+      "rank": 1,
+      "stale_rank": 2,
+      "elapsed_ms": 2.54
+    },
+    {
+      "kind": "current",
+      "query": "Which gym do I go to?",
+      "expected": "gym_new",
+      "stale": "gym_old",
+      "retrieved": [
+        "gym_old",
+        "gym_new"
+      ],
+      "rank": 2,
+      "stale_rank": 1,
+      "elapsed_ms": 2.14
+    },
+    {
+      "kind": "current",
+      "query": "What is my wifi password?",
+      "expected": "wifi_new",
+      "stale": "wifi_old",
+      "retrieved": [
+        "wifi_old",
+        "wifi_new"
+      ],
+      "rank": 2,
+      "stale_rank": 1,
+      "elapsed_ms": 2.09
+    },
+    {
+      "kind": "single",
+      "query": "Where is my passport stored?",
+      "expected": "passport",
+      "stale": null,
+      "retrieved": [
+        "passport"
+      ],
+      "rank": 1,
+      "stale_rank": null,
+      "elapsed_ms": 3.11
+    },
+    {
+      "kind": "single",
+      "query": "What allergy do I have?",
+      "expected": "allergy",
+      "stale": null,
+      "retrieved": [
+        "allergy"
+      ],
+      "rank": 1,
+      "stale_rank": null,
+      "elapsed_ms": 3.25
+    },
+    {
+      "kind": "single",
+      "query": "What is my cat called?",
+      "expected": "pet",
+      "stale": null,
+      "retrieved": [
+        "pet"
+      ],
+      "rank": 1,
+      "stale_rank": null,
+      "elapsed_ms": 2.25
+    },
+    {
+      "kind": "historical",
+      "query": "Where was my office in 2022?",
+      "expected": "office_old",
+      "stale": "office_new",
+      "retrieved": [
+        "office_old"
+      ],
+      "rank": 1,
+      "stale_rank": null,
+      "elapsed_ms": 2.33
+    },
+    {
+      "kind": "historical",
+      "query": "What was my phone number in 2021?",
+      "expected": "phone_old",
+      "stale": "phone_new",
+      "retrieved": [
+        "phone_old"
+      ],
+      "rank": 1,
+      "stale_rank": null,
+      "elapsed_ms": 2.42
+    }
+  ]
+}
