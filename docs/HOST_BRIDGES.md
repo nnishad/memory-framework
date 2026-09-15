@@ -2,8 +2,9 @@
 
 # Hermes host integration — 0.8.0rc8
 
-The framework includes an explicit host patch for NousResearch/hermes-agent v2026.9.11,
-commit 939e45c91d751fadd94dcd1b873ac3cb44846213. Generic optional callbacks live in
+The framework includes an explicit host patch for the Hermes release pinned in
+`host-patch/manifest.json` — currently NousResearch/hermes-agent v2026.9.14, commit
+345cd2b057a452236de401d3534b8502a7465e8d. Generic optional callbacks live in
 Hermes; backend policy remains in the provider. Plugin installation does not edit Hermes core.
 
 ## Installation and rollback
@@ -15,7 +16,7 @@ python scripts/manage_hermes_host_patch.py check --hermes-root /path/to/hermes-a
 python scripts/manage_hermes_host_patch.py apply --hermes-root /path/to/hermes-agent
 ```
 
-Restart the memory service and Hermes. The installer verifies the release anchor and every touched file, checks the complete patch before applying, rejects local edits/mixed states, and verifies resulting hashes. Reapplying is a no-op. It does not fetch a release or force-overwrite another version. Review `host-patch/hermes-v2026.9.11.patch` and its hash manifest before installation.
+Restart the memory service and Hermes. The installer verifies the release anchor and every touched file, checks the complete patch before applying, rejects local edits/mixed states, and verifies resulting hashes. Reapplying is a no-op. It does not fetch a release or force-overwrite another version. Review the release patch named by `host-patch/manifest.json` and its hash manifest before installation.
 
 Rollback with Hermes stopped:
 
@@ -24,6 +25,24 @@ python scripts/manage_hermes_host_patch.py rollback --hermes-root /path/to/herme
 ```
 
 Rollback restores source only. It preserves stored records and removes the extended host protections described here; do not resume sensitive native history assuming these guards remain enabled.
+
+## Host attestation
+
+`host_memory_api` and `host_memory_root` reach the provider only through the patched host, so
+starting patched Hermes once is what records `personal-memory/host-runtime.json`. `doctor` verifies
+that file against the contract packaged with the framework
+(`personal_memory/host_contract.json`, the same pin as the bundle manifest) by re-hashing every
+patched file. A deployment that has never started patched Hermes, or has edited the host since,
+fails `pinned_host_patch` instead of being certified on trust.
+
+The v2026.9.14 patch was re-based on 2026-09-15 to bind `pathlib.Path` inside the block that
+computes `host_memory_root`; the reference was previously never imported and its `NameError` was
+swallowed by the surrounding `with suppress(Exception)`, so no installation could ever pass
+`pinned_host_patch`. Re-base hashes: patch
+`d34da13ec2d2ffcce62f0fa7eff719c7bd101317928da0298f0ce74d3454d7f8`, `agent/agent_init.py`
+`03324e9689e065726edf7f1352301c36551b08f8646b53ba9f7f753dd432ff0a`. The archived v2026.8.31 and
+v2026.9.11 bundles predate that fix, keep their original hashes and are not qualified for
+attestation.
 
 ## Connected paths
 
@@ -59,7 +78,7 @@ Run the selected-session native sync described in NATIVE_HISTORY.md before relyi
 
 ## Validation and remaining limits
 
-145 framework tests pass. Seven host bridge scenarios exercise actual SessionDB and AIAgent construction. A deterministic local model protocol fixture completes a memory tool round trip and durable turn capture. The focused upstream Hermes suite passes 388 tests; two failures also reproduce with the original state/search source: SQL trace-count instrumentation and an unavailable /proc process directory. Logs are included. Patch apply, repeat apply, rollback, repeat rollback and local-edit rejection pass.
+145 framework tests pass. Seven host bridge scenarios exercise actual SessionDB and AIAgent construction. A deterministic local model protocol fixture completes a memory tool round trip and durable turn capture. The focused upstream Hermes suite passes 388 tests; two failures also reproduce with the original state/search source: SQL trace-count instrumentation and an unavailable /proc process directory. Logs are included. Patch apply, repeat apply, rollback, repeat rollback and local-edit rejection pass. `tests/test_production.py::HostPatchBundleTests` additionally pins the bundle manifest, the packaged contract and the self-containment of the attestation hunk.
 
 These are integration tests, not full production certification. Full desktop RPC/UI, real outbound cron delivery, complete child-agent execution, real-model recall quality and platform matrices remain unqualified. Recipient scope storage currently uses job identity; overlapping runs of the same job need additional qualification. Native task/todo/notepad mapping is not added by cron outcome capture.
 

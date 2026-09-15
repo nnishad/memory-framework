@@ -2,7 +2,9 @@
 
 Audit date: 2026-09-14. Framework: `hermes-personal-memory` v0.8.0rc8. Hermes pin:
 **v2026.9.14 / v0.21.3**, commit `345cd2b057a452236de401d3534b8502a7465e8d`, patch
-`patch_sha256=62477753…`, `memory_bridge.py` sha256 `d8cd3e15…6acb`.
+`patch_sha256=62477753…` as audited, re-based to `d34da13e…` on 2026-09-15
+(`HOST_BRIDGES.md`), `memory_bridge.py` sha256 `d8cd3e15…6acb`. The re-base adds one
+`from pathlib import Path` to the attestation block, so no conclusion below moves.
 
 This is a **read-only source audit** of the real patched 9.14 tree (exported at
 `/home/hermes/hermes-e2e/hermes-src-914`). It supersedes the question "does the 2026.8.31
@@ -193,6 +195,12 @@ No name collisions exist. ✓
 `context_allowed`, records `host_context`, and persists `host-runtime.json` when
 `host_memory_api==2`. CLI path sends no `host_context` (it stays `None`), which our scope
 logic handles as "defer to `session_allowed`". ✓
+
+> Correction from the 2026-09-15 production deployment: the two attestation kwargs are set inside
+> `with suppress(Exception)` and that block raised `NameError: Path`, so neither kwarg ever arrived
+> and `host-runtime.json` was never written. "Always supplies" above describes the patch text, not
+> the runtime behaviour — reading a diff is not the same as executing it. Fixed by the v2026.9.14
+> re-base recorded in `HOST_BRIDGES.md`, and verified live by `doctor` → `pinned_host_patch` PASS.
 
 ## §F — Why `identity_signature = {}` is correct for us
 

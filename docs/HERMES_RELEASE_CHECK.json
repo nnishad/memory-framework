@@ -1,7 +1,7 @@
 {
-  "hermes_tag": "v2026.9.11",
-  "hermes_commit": "939e45c91d751fadd94dcd1b873ac3cb44846213",
-  "provider_contract_sha256": "a888463570e35bd88524c2e3ab4ed921753862fd7ca93fd05cebdb61818fc064",
+  "hermes_tag": "v2026.9.14",
+  "hermes_commit": "345cd2b057a452236de401d3534b8502a7465e8d",
+  "provider_contract_sha256": "f1fe9f9941d0bdaba67d9357cfd2d1112cae9d68fceb853b010e0e9b60036d20",
   "checks": [
     {
       "check": "real user-plugin discovery and copied-module loading",

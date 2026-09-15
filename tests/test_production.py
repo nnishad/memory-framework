@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import importlib.util
 import json
 import sqlite3
@@ -222,5 +223,38 @@ class DeletionRecoveryTests(unittest.TestCase):
             with self.assertRaises(ValueError):recovered.evidence(rid)
             with self.assertRaises(ValueError):recovered.ingest_contract([item()])
             with self.assertRaises(ValueError):recovered.ingest_contract([item('late')])
+
+class HostPatchBundleTests(unittest.TestCase):
+    """The patch, its manifest and the packaged contract are a single pin and must move together."""
+
+    project=Path(__file__).resolve().parents[1]
+
+    def manifest(self):
+        return json.loads((self.project/'host-patch'/'manifest.json').read_text(encoding='utf-8'))
+
+    def test_pinned_artifacts_hash_to_each_other(self):
+        manifest=self.manifest()
+        patch=self.project/'host-patch'/('hermes-'+manifest['release']+'.patch')
+        self.assertTrue(patch.is_file(),'the manifest names a release whose patch is not in the bundle')
+        self.assertEqual(hashlib.sha256(patch.read_bytes()).hexdigest(),manifest['patch_sha256'])
+        contract=json.loads((self.project/'personal_memory'/'host_contract.json').read_text(encoding='utf-8'))
+        self.assertEqual(contract,manifest,'doctor verifies a contract that the bundle no longer matches')
+
+    def test_attestation_hunk_is_self_contained(self):
+        # The hunk that supplies the host attestation once called Path() without importing pathlib. It sits
+        # inside `with suppress(Exception)`, so the NameError was swallowed, the provider never recorded the
+        # runtime it runs under and doctor could not certify any installation. Without an upstream checkout
+        # a hunk cannot be re-verified against its file, so its own added lines are checked here.
+        lines=(self.project/'host-patch'/('hermes-'+self.manifest()['release']+'.patch')).read_text(encoding='utf-8').splitlines()
+        hunk=None;run=[]
+        for line in lines+[None]:
+            if line is not None and line.startswith('+') and not line.startswith('+++'):
+                run.append(line[1:]);continue
+            if hunk is None and any('host_memory_root' in added for added in run): hunk=run
+            run=[]
+        self.assertIsNotNone(hunk,'the pinned patch no longer passes the host attestation kwargs')
+        joined='\n'.join(hunk)
+        self.assertIn('host_memory_api',joined)
+        if 'Path(' in joined:self.assertIn('from pathlib import Path',joined,'the hunk must bind every name it uses')
 
 if __name__=="__main__":unittest.main()

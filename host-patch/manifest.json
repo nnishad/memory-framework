@@ -8,7 +8,7 @@
   "files": {
     "agent/agent_init.py": {
       "before": "d1a1df8dc03a1381a9fd7591d4293e912fb1cb0fa2c1370f8c72a7500acb824a",
-      "after": "c17ce44457e8e184857732e6d45946ccf516b66f14d08e2781be1ab6265c43e2"
+      "after": "03324e9689e065726edf7f1352301c36551b08f8646b53ba9f7f753dd432ff0a"
     },
     "agent/background_review.py": {
       "before": "17551ad59cb5aa2d0a0da260de96eef3790fec786a6d0b8043ac8e8eb29d8651",
@@ -127,7 +127,7 @@
       "after": "66822fd793e31cfabb234c7f18ecc675444fb0bbe47525ca42c95081f27b9c6d"
     }
   },
-  "patch_sha256": "62477753ee31870614ceaedd39a4b0d3f17dd6d2413c75ac04e9abab574120c8",
+  "patch_sha256": "d34da13ec2d2ffcce62f0fa7eff719c7bd101317928da0298f0ce74d3454d7f8",
   "host_memory_api": 2,
   "native_store_contract": 1,
   "framework_version": "0.8.0rc8"

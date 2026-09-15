@@ -1,14 +1,15 @@
 diff --git a/agent/agent_init.py b/agent/agent_init.py
-index e62cf5179b..1ad1b10e58 100644
+index e62cf5179b..9907f08a86 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
-@@ -1202,6 +1202,13 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
+@@ -1202,6 +1202,14 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
          "hermes_home": str(get_hermes_home()),
          "agent_context": "primary",
      }
 +    if getattr(agent, "_memory_host_context", None) is not None:
 +        kwargs["host_context"] = agent._memory_host_context
 +    with suppress(Exception):
++        from pathlib import Path
 +        from agent.memory_bridge import HOST_MEMORY_API
 +        import agent.memory_bridge as _host_memory_bridge
 +        kwargs["host_memory_api"] = HOST_MEMORY_API
@@ -16,7 +17,7 @@ index e62cf5179b..1ad1b10e58 100644
      if kwargs["platform"] == "cli":
          kwargs["warning_callback"] = agent._emit_warning
          kwargs["status_callback"] = agent._emit_status
-@@ -1226,7 +1233,8 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
+@@ -1226,7 +1234,8 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
  
  
  def _init_memory(agent, _agent_cfg, skip_memory, platform):
@@ -26,7 +27,7 @@ index e62cf5179b..1ad1b10e58 100644
      agent._memory_store = None
      agent._memory_enabled = False
      agent._user_profile_enabled = False
-@@ -1244,25 +1252,13 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
+@@ -1244,25 +1253,13 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
          "memory" in (agent.enabled_toolsets or [])
          and "memory" not in (agent.disabled_toolsets or [])
      )
@@ -55,7 +56,7 @@ index e62cf5179b..1ad1b10e58 100644
  
      # External memory provider plugin (one at a time, alongside built-in): memory.provider.
      agent._memory_manager = None
-@@ -1292,6 +1288,37 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
+@@ -1292,6 +1289,37 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
              _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
              agent._memory_manager = None
  
@@ -93,7 +94,7 @@ index e62cf5179b..1ad1b10e58 100644
      from agent.memory_manager import inject_memory_provider_tools
      inject_memory_provider_tools(agent)
  
-@@ -2204,6 +2231,7 @@ def init_agent(
+@@ -2204,6 +2232,7 @@ def init_agent(
      checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
      checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
      requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
@@ -101,7 +102,7 @@ index e62cf5179b..1ad1b10e58 100644
  ):
      """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
  
-@@ -2218,6 +2246,7 @@ def init_agent(
+@@ -2218,6 +2247,7 @@ def init_agent(
        skip_context_files: skip SOUL.md/.hermes.md/AGENTS.md/CLAUDE.md/.cursorrules injection;
          load_soul_identity keeps ~/.hermes/SOUL.md as identity regardless.
      """

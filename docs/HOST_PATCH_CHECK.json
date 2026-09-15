@@ -1,7 +1,7 @@
 {
   "passed": true,
   "version": "0.8.0rc8",
-  "patch_sha256": "62477753ee31870614ceaedd39a4b0d3f17dd6d2413c75ac04e9abab574120c8",
+  "patch_sha256": "d34da13ec2d2ffcce62f0fa7eff719c7bd101317928da0298f0ce74d3454d7f8",
   "checks": [
     {
       "action": "check",
