@@ -48,6 +48,9 @@ with tempfile.TemporaryDirectory() as tmp:
             except Exception:
                 if process.poll() is not None or time.monotonic()>deadline:raise RuntimeError('Service startup failed')
                 time.sleep(.03)
+        # The poll budget above is deliberately short. Managed Hindsight retains synchronously, so real
+        # calls on this path wait for model extraction and must not inherit the 1 second probe timeout.
+        client=Client(cfg['url'],cfg['token'],timeout=600)
         wire=adapt_existing({'source':'fixture','source_id':'bicycle','text':'The bicycle is in the west shed.','occurred_at':now()},connector_id='tests.runtime',connector_version='1',source_locator='fixture://bicycle',observed_at=now())
         client.call('/v1/ingest',{'items':[wire]})
         from run_agent import AIAgent

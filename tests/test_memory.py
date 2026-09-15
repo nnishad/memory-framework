@@ -126,7 +126,10 @@ class HTTPFixture(unittest.TestCase):
         self.thread.start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
-        self.client = Client(f"http://127.0.0.1:{self.server.server_port}", self.token)
+        # The first search with two or more candidates loads the cross-encoder inside the request, which
+        # takes seconds on a cold model cache. That is latency, not behaviour, so the client waits instead
+        # of failing an assertion; every claim under test is still checked exactly as written.
+        self.client = Client(f"http://127.0.0.1:{self.server.server_port}", self.token, timeout=60)
 
 
 class ServerTests(HTTPFixture):
