@@ -124,4 +124,55 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(server.store.status()["records"],0)
 
 
+class ModelFacingSchemaTests(unittest.TestCase):
+    """The tool surface must stay parseable by grammar-compiling engines while the
+    server-side contract keeps every constraint."""
+
+    def keywords(self,node,found=None):
+        found=set() if found is None else found
+        if isinstance(node,dict):
+            for key,child in node.items():
+                if key in {"pattern","format"}:found.add(key)
+                self.keywords(child,found)
+        elif isinstance(node,list):
+            for child in node:self.keywords(child,found)
+        return found
+
+    def unbounded(self,node,depth=0):
+        """Collect nested string bounds that grammar-compiling engines cannot compile."""
+        from personal_memory.tools import NESTED_LENGTH_LIMIT,SUBSCHEMA_KEYWORDS
+        found=[]
+        if isinstance(node,dict):
+            for key,child in node.items():
+                child_depth=depth+1 if key in SUBSCHEMA_KEYWORDS else depth
+                if key=="maxLength" and child_depth>=2 and isinstance(child,int) and child>=NESTED_LENGTH_LIMIT:
+                    found.append(child)
+                found+=self.unbounded(child,child_depth)
+        elif isinstance(node,list):
+            for child in node:found+=self.unbounded(child,depth)
+        return found
+
+    def test_tool_schemas_exclude_parser_unsafe_keywords(self):
+        from personal_memory.tools import SCHEMAS
+        self.assertEqual(self.keywords(SCHEMAS),set())
+
+    def test_nested_string_bounds_stay_compilable(self):
+        from personal_memory.tools import SCHEMAS
+        for entry in SCHEMAS:
+            self.assertEqual(self.unbounded(entry["parameters"]),[],entry["name"])
+
+    def test_capture_schema_still_declares_the_full_contract_shape(self):
+        from personal_memory.tools import SCHEMAS
+        capture=next(s for s in SCHEMAS if s["name"]=="personal_memory_capture")
+        self.assertEqual(capture["parameters"]["required"],RECORD_SCHEMA["required"])
+        self.assertEqual(set(capture["parameters"]["properties"]),set(RECORD_SCHEMA["properties"]))
+        self.assertEqual(self.keywords({"contract":RECORD_SCHEMA}),{"pattern","format"})
+        # Only the model-facing copy is simplified: the contract keeps the bound the engine rejects,
+        # the service still enforces it, and the root body keeps its ceiling.
+        contract=RECORD_SCHEMA["properties"]["provenance"]["properties"]["source_locator"]
+        self.assertEqual(contract["maxLength"],2000)
+        self.assertNotIn("maxLength",capture["parameters"]["properties"]["provenance"]["properties"]["source_locator"])
+        self.assertEqual(capture["parameters"]["properties"]["text"]["maxLength"],100000)
+
+
 if __name__=="__main__":unittest.main()

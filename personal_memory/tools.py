@@ -1,6 +1,38 @@
 from .ingestion import RECORD_SCHEMA
 
 
+# Grammar-compiling local engines (llama.cpp, vLLM) build a constrained decoder from the model-facing
+# tool schema and reject constraints the published contract legitimately carries:
+#  * unanchored `pattern`/`format` -> "Pattern must start with '^' and end with '$'";
+#  * a nested `maxLength` at or above 2000 -> "Failed to initialize samplers: failed to parse grammar".
+#    Measured on llama.cpp with the contract's own fields: a nested bound of 1999 compiles, 2000 does not,
+#    and the limit is per string rather than per object. Strings declared directly on the record root keep
+#    their bound, which is what still stops an agent from streaming an unbounded body.
+# The contract itself is unchanged and is still enforced by the service on every call, so only the
+# model-facing copy is simplified.
+PARSER_UNSAFE_KEYS = {"pattern", "format"}
+NESTED_LENGTH_KEYWORDS = {"maxLength"}
+NESTED_LENGTH_LIMIT = 2000
+SUBSCHEMA_KEYWORDS = {"properties", "patternProperties", "additionalProperties", "items", "prefixItems",
+                      "allOf", "anyOf", "oneOf", "not", "if", "then", "else", "$defs", "definitions"}
+
+
+def parser_safe(node, depth=0):
+    if isinstance(node, dict):
+        simplified = {}
+        for key, value in node.items():
+            if key in PARSER_UNSAFE_KEYS:
+                continue
+            if (key in NESTED_LENGTH_KEYWORDS and depth >= 2
+                    and isinstance(value, int) and value >= NESTED_LENGTH_LIMIT):
+                continue
+            simplified[key] = parser_safe(value, depth + 1 if key in SUBSCHEMA_KEYWORDS else depth)
+        return simplified
+    if isinstance(node, list):
+        return [parser_safe(value, depth) for value in node]
+    return node
+
+
 def field(kind="string", **kwargs):
     return {"type": kind, **kwargs}
 
@@ -28,7 +60,7 @@ SCHEMAS = [
         "evidence_kind": field(enum=["reported", "observed", "inferred"]),"evidence_quote":field(),
         "valid_from": field(), "valid_to": field(), "supersedes": field()}, ["text", "record_id"]),
     {"name":"personal_memory_capture","description":"Ingest a complete contract 1.0 record. Required fields include stable source identity, revision, provenance and observation time. Use null for unknown event time, [] for unobserved participants and {} for no extensions. Extra fields belong in namespaced, versioned extensions. Never invent source provenance.",
-     "parameters":{k:v for k,v in RECORD_SCHEMA.items() if k not in {"$schema","title"}}},
+     "parameters":parser_safe({k:v for k,v in RECORD_SCHEMA.items() if k not in {"$schema","title"}})},
     schema("personal_memory_timeline", "Read a bounded entity history including superseded claims; inspect dates. This is not an exhaustive history.", {
         "entity_id": field(), "limit": field("integer", minimum=1, maximum=100)}, ["entity_id"]),
     schema("personal_memory_status", "Inspect service availability, retrieval capabilities, source coverage and queued captures before claiming memory is complete."),
