@@ -1,4 +1,5 @@
 """Read-only deployment diagnostics. Readiness does not mean personal-data completeness."""
+import importlib.metadata
 import importlib.util
 import json
 import os
@@ -50,7 +51,6 @@ def doctor(home,offline=False):
     add("native_backup_path",data.is_relative_to(home.resolve()) or data.is_relative_to(Path.home().resolve()),"Native Hermes backup skips external paths outside the OS home; encrypted framework backups support the configured data directory")
     for module in ("uvicorn","cryptography","hindsight_api","hindsight_embed"):
         add("dependency_"+module,importlib.util.find_spec(module) is not None,"Required production dependency")
-    import importlib.metadata
     drift=[]
     for package,tested in TESTED_EMBEDDING_STACK.items():
         try:installed=importlib.metadata.version(package)
