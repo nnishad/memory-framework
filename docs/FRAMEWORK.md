@@ -1,4 +1,4 @@
-# Framework 0.7.0rc1
+# Framework 0.8.0rc8
 
 ## Architecture and persistence
 
@@ -6,8 +6,10 @@ Canonical source records and source revisions remain the evidence authority. Lea
 hold outcomes, snapshots, proposed/active lessons, suites, evaluations, consolidation results,
 beliefs, relationships, measurements, tasks and procedures. Evidence links and learning-object
 dependencies propagate invalidation. All these objects and durable queues live in `memory.db`.
-SQLite schema version is 6; a v5 database receives additive tables and indexes on open. Older
-application versions must not open the new schema. Fresh deployment is the primary target.
+SQLite schema version is 8. `Store` accepts versions 0 through 8 and applies the current
+tables, indexes and supported additive migrations on open. Compatibility with an older
+application must be checked before rollback; provider rollback does not downgrade the database.
+Fresh deployment remains the primary target.
 
 Automatic recall is the existing bounded prefetch path. Explicit progressive recall can plan
 queries, expand retrieval rounds, rerank candidates and suppress identical context. Structured
@@ -61,12 +63,31 @@ endpoint to receive the evidence needed for the configured operation.
 most four search queries; reranking must return a permutation of supplied IDs. Neither may
 invent source IDs, broaden explicit filters or mark evidence sufficient. Invalid adapter output
 falls back where possible and is identified in diagnostics. Without a planner, clause splitting
-is deterministic. Without a reranker, the hybrid ranking is retained.
+is deterministic. Without this adapter, the backend ranking is retained, including any enabled backend
+cross-encoder and recency ranking.
 
 Progressive recall launches at most three rounds and stops launching later rounds after the
 round budget expires. Planner/reranker subprocesses have three-second timeouts; backend calls
 retain their own limits. This is not a hard end-to-end latency guarantee under database contention.
 Text budgets count episode/claim characters, not the whole JSON response or model tokens.
+
+## Retrieval defaults
+
+The supported service starts managed Hindsight 0.9.2 before constructing retrieval. Canonical
+SQLite remains authoritative; candidates are rehydrated and relevance-gated before return.
+Hindsight uses local ONNX embeddings and RRF reranking by default. Without provider credentials,
+its `none` mode retains and searches chunks without LLM extraction.
+
+The separate `retrieval` configuration defaults to bounded graph propagation (two hops),
+recency weighting (`temporal.weight: 1.0`, half-life 365 days), and best-effort cross-encoder
+reranking (`rerank.enabled: true`, model `cross-encoder/ms-marco-MiniLM-L-6-v2`, window 24).
+The cross-encoder requires the optional `[rerank]` dependencies and model availability; an
+import/load failure disables it for that process. A scoring failure falls back for that
+request. Both preserve fusion order before recency ranking and record a diagnostic. Disable it with `rerank.enabled: false` or `PERSONAL_MEMORY_DISABLE_RERANK=1`.
+Set `graph.enabled: false` or `temporal.weight: 0` to disable those ranking features. These
+backend settings are separate from the optional `intelligence.recall` model adapters above.
+ASGI startup warms retrieval in a background thread; startup completion does not wait for it.
+Additional multilingual embeddings are opt-in via `setup --semantic` and the `[semantic]` extra.
 
 ## Strict operation discovery and roles
 
@@ -90,7 +111,7 @@ no procedure execution. Capability access is checked before enqueueing. Queue ex
 checks that the capability declaration still matches the bound version and that the lesson is
 still active. This does not isolate Hermes from its own OS account or the owner of its settings.
 
-Nineteen Hermes tools include `personal_memory_knowledge` for structured reads,
+Twenty Hermes tools include `personal_memory_knowledge` for structured reads,
 `personal_memory_manage` for structured writes, and `personal_memory_execute` for a bound
 procedure. The existing owner/session gate and primary-context write guard cover the additions.
 Group/unknown remote sessions remain denied. Administrative endpoints are not exposed as agent
@@ -149,8 +170,9 @@ scale/finite offset per unit. Redefining an ingested metric requires a new metri
 
 `/v1/aggregate` requires subject, metric, canonical unit and explicit half-open time window.
 It returns count/min/max/unweighted sample mean from matching stored measurements. It neither
-infers clinical meaning nor assumes sensor coverage. The existing health CSV importer preserves
-source records; a source adapter or Hermes must map them into this typed API. Arbitrary extensions
+infers clinical meaning nor assumes sensor coverage. The health CSV importer preserves
+source records and, with `--subject-id <existing-entity-id>`, also maps supported metrics into
+this typed API. Without that option it imports source records only. Arbitrary extensions
 are not automatically treated as measurements. Identical physical samples supplied with different
 keys are not automatically deduplicated; the adapter must use stable sample identity.
 

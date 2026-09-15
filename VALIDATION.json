@@ -1,6 +1,7 @@
 {
   "version": "0.8.0rc8",
   "validation_date": "2026-09-14",
+  "checkout_scope_note": "Historical RC8 validation against Hermes v2026.9.11. The current 0.8.0rc8 checkout pins Hermes v2026.9.14 in host-patch/manifest.json and includes subsequent changes. Counts, hashes, deployment observations and remaining gates below retain their recorded scope; they are not a fresh validation of this checkout. See docs/HERMES_INTEGRATION.md and docs/HOST_BRIDGES.md for current integration and dated later deployment notes.",
   "ingestion_contract": "1.0",
   "tests": {
     "passed": 168,

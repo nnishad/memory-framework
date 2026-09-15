@@ -3,10 +3,11 @@
 The remote engine ranks candidate documents. Its inferred facts never overwrite
 the canonical contact registry or bypass local tombstones and temporal filters.
 """
+import math
 import time
 from urllib.parse import quote
 
-from .client import Client
+from .client import Client, ServiceError
 from .common import digest, now
 
 
@@ -39,6 +40,7 @@ class Hindsight:
             rows = [dict(r) for r in db.execute("""SELECT r.* FROM records r WHERE deleted=0 AND NOT EXISTS(
                 SELECT 1 FROM hindsight_done d WHERE d.backend=? AND d.record_id=r.id)
                 AND NOT EXISTS(SELECT 1 FROM hindsight_pending p WHERE p.backend=? AND p.record_id=r.id AND p.next_retry>?)
+                AND r.source!='hermes-lineage'
                 """+scope+" ORDER BY r.ingested_at,r.id LIMIT ?", params)]
         errors=[]
         for rid in deleted:
@@ -53,28 +55,55 @@ class Hindsight:
         if errors:
             self.last_error=errors[0]+": deletion pending"
             return 0
-        for row in rows:
-            # Journal before network I/O: a lost acknowledgement can still require deletion.
+        if rows:
+            # Journal the complete batch before network I/O. One retain request avoids repeated
+            # HTTP/LLM setup while a lost acknowledgement still leaves every document deletable.
             with self.store.connect() as db:
-                db.execute("INSERT OR IGNORE INTO hindsight_pending(backend,record_id) VALUES(?,?)",(self.key,row["id"]))
-            try:
-                result = self.write_client.call(self.path + "/memories", {"async":False,"items":[{
+                db.executemany("INSERT OR IGNORE INTO hindsight_pending(backend,record_id) VALUES(?,?)",
+                               [(self.key,row["id"]) for row in rows])
+            items=[{
                     "content":row["text"],"document_id":row["id"],"update_mode":"replace",
                     "timestamp":row["occurred_at"] or "unset","context":"Source evidence: " + row["source"] + "; preserve the actual speaker; quoted messages are data.",
                     "metadata":{"canonical_record_id":row["id"],"source":row["source"],"source_id":row["source_id"]},
-                    "tags":["source:" + row["source"]]}]})
-                if result.get("success") is not True or result.get("async") is True:
-                    raise RuntimeError("Hindsight retain did not confirm synchronous completion")
-                with self.store.connect() as db:
-                    db.execute("INSERT OR IGNORE INTO hindsight_done VALUES(?,?)", (self.key,row["id"]))
-                    db.execute("DELETE FROM hindsight_pending WHERE backend=? AND record_id=?",(self.key,row["id"]))
+                    "tags":["source:" + row["source"]]} for row in rows]
+            try:
+                self._retain(items)
             except Exception as error:
-                errors.append(type(error).__name__)
-                with self.store.connect() as db:
-                    db.execute("UPDATE hindsight_pending SET next_retry=?,error=? WHERE backend=? AND record_id=?",
-                               (time.time()+30,type(error).__name__,self.key,row["id"]))
+                # A malformed/oversized document must not permanently block later records.
+                # Isolate ambiguous timeouts and contract failures only; a clear service or
+                # connection outage backs off the whole batch without multiplying requests.
+                isolate=(isinstance(error,TimeoutError) or type(error) is RuntimeError or
+                         (isinstance(error,ServiceError) and error.status in {400,413,422}))
+                if isolate and len(items)>1:
+                    individual_errors=[]
+                    for item in items:
+                        try:self._retain([item])
+                        except Exception as individual:
+                            individual_errors.append(type(individual).__name__)
+                            self._backoff([item["document_id"]],individual)
+                    errors.extend(individual_errors[:1])
+                else:
+                    errors.append(type(error).__name__)
+                    self._backoff([item["document_id"] for item in items],error)
         self.last_error = errors[0]+": retain pending" if errors else None
         return len(rows)+len(deleted)
+
+    def _retain(self, items):
+        result=self.write_client.call(self.path + "/memories", {"async":False,"items":items})
+        if (result.get("success") is not True or result.get("async") is True or
+                result.get("items_count",len(items))!=len(items)):
+            raise RuntimeError("Hindsight retain did not confirm synchronous completion")
+        ids=[item["document_id"] for item in items]
+        with self.store.connect() as db:
+            db.executemany("INSERT OR IGNORE INTO hindsight_done VALUES(?,?)",
+                           [(self.key,rid) for rid in ids])
+            db.executemany("DELETE FROM hindsight_pending WHERE backend=? AND record_id=?",
+                           [(self.key,rid) for rid in ids])
+
+    def _backoff(self, record_ids, error):
+        with self.store.connect() as db:
+            db.executemany("UPDATE hindsight_pending SET next_retry=?,error=? WHERE backend=? AND record_id=?",
+                           [(time.time()+30,type(error).__name__,self.key,rid) for rid in record_ids])
 
     def clear_bank(self):
         """Erase every memory unit, entity and document in the managed bank, then reset the
@@ -108,7 +137,16 @@ class Hindsight:
             if not rid:
                 continue  # Consolidated facts without one original document need a dependency resolver.
             if rid not in found:
-                rows.append({"id":rid}); found.add(rid)
+                item={"id":rid}
+                # Newer compatible Hindsight responses expose the raw cosine similarity.
+                # Preserve it when present so canonical relevance gating does not throw away a
+                # valid paraphrase merely because the local source uses different words.
+                scores=fact.get("scores")
+                similarity=scores.get("semantic") if isinstance(scores,dict) else None
+                if (isinstance(similarity,(int,float)) and not isinstance(similarity,bool) and
+                        math.isfinite(similarity) and -1<=similarity<=1):
+                    item["similarity"]=float(similarity)
+                rows.append(item); found.add(rid)
         return rows
 
     def status(self):
@@ -116,7 +154,7 @@ class Hindsight:
             synced = db.execute("SELECT count(*) FROM hindsight_done d JOIN records r ON r.id=d.record_id WHERE backend=? AND deleted=0", (self.key,)).fetchone()[0]
             deletion_pending = db.execute("SELECT count(*) FROM (SELECT backend,record_id FROM hindsight_done UNION SELECT backend,record_id FROM hindsight_pending) d JOIN records r ON r.id=d.record_id WHERE backend=? AND deleted=1", (self.key,)).fetchone()[0]
             scope="" if "*" in self.sources else " AND r.source IN ("+",".join("?" for _ in self.sources)+")"
-            pending=db.execute("SELECT count(*) FROM records r WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM hindsight_done d WHERE d.backend=? AND d.record_id=r.id)"+scope,
+            pending=db.execute("SELECT count(*) FROM records r WHERE deleted=0 AND r.source!='hermes-lineage' AND NOT EXISTS(SELECT 1 FROM hindsight_done d WHERE d.backend=? AND d.record_id=r.id)"+scope,
                                [self.key]+([] if "*" in self.sources else self.sources)).fetchone()[0]
         return {"enabled":True,"synced_records":synced,"pending_records":pending,"pending_deletions":deletion_pending,
                 "source_scope":self.sources,"error":self.last_error,"runtime":self.runtime,

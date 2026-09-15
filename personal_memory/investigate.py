@@ -15,11 +15,15 @@ class Investigation:
     def close(self):
         self.pool.shutdown(wait=True,cancel_futures=True)
 
-    def search(self,*,goal,branches,limit=18,text_budget=16000,timeout=10,graph_hops=0):
+    def search(self,*,goal,branches,limit=18,text_budget=16000,timeout=10,graph_hops=0,exclude_record_ids=None):
         required_text(goal,'goal',4000)
         if not isinstance(branches,list) or not 1<=len(branches)<=6:raise ValueError('Provide 1..6 branches')
         for value,low,high,label in [(limit,1,30,'limit'),(text_budget,1000,48000,'text_budget'),(timeout,1,25,'timeout'),(graph_hops,0,2,'graph_hops')]:
             if type(value) is not int or not low<=value<=high:raise ValueError(f'{label} must be {low}..{high}')
+        if exclude_record_ids is None:exclude_record_ids=[]
+        if (not isinstance(exclude_record_ids,list) or len(exclude_record_ids)>100 or
+                any(not isinstance(rid,str) or not rid for rid in exclude_record_ids)):
+            raise ValueError('exclude_record_ids must contain at most 100 record IDs')
         parsed=[];seen=set();jobs={}
         for branch in branches:
             if not isinstance(branch,dict) or set(branch)-{'id','intent','queries','filters'}:raise ValueError('Invalid branch fields')
@@ -33,7 +37,8 @@ class Investigation:
             filters=dict(filters)
             for k,v in filters.items():filters[k]=timestamp(v) if k in {'after','before'} else required_text(v,k,500)
             if filters.get('after') and filters.get('before') and filters['before']<=filters['after']:raise ValueError('Invalid time interval')
-            args=dict(query=queries[0],queries=queries[1:],depth='balanced',limit=8,expand_entities=False,**filters)
+            args=dict(query=queries[0],queries=queries[1:],depth='balanced',limit=8,
+                      expand_entities=False,exclude_record_ids=exclude_record_ids,**filters)
             key=json.dumps(args,sort_keys=True);jobs[key]=args
             parsed.append(dict(id=bid,intent=intent,queries=queries,filters=filters,key=key))
         # Reserve the whole request before submitting. Overload cannot grow an

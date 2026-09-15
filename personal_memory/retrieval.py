@@ -40,6 +40,13 @@ def _rerank_disabled_by_env():
     return os.environ.get("PERSONAL_MEMORY_DISABLE_RERANK", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _semantic_disabled_by_env():
+    """Operational kill-switch: PERSONAL_MEMORY_DISABLE_SEMANTIC forces the (default-on) local
+    embedding index off without touching config - used for dependency-light test runs and to run
+    an instance without the embedding model; production defaults to enabled."""
+    return os.environ.get("PERSONAL_MEMORY_DISABLE_SEMANTIC", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Hybrid:
     def __init__(self, store, config=None, semantic=None, hindsight=None, start=True):
         self.store, self.config = store, config or {}
@@ -64,18 +71,26 @@ class Hybrid:
         self.errors, self.threads = {}, []
         self.stop = threading.Event()
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="memory-search")
-        for name, cls in (("semantic", "SemanticIndex"), ("hindsight", "Hindsight")):
-            cfg = self.config.get(name, {})
-            if cfg.get("enabled") and getattr(self, name) is None:
-                try:
-                    if name == "semantic":
-                        from .semantic import SemanticIndex
-                        self.semantic = SemanticIndex(store, cfg)
-                    else:
-                        from .hindsight import Hindsight
-                        self.hindsight = Hindsight(store, cfg)
-                except Exception as error:
-                    self.errors[name] = type(error).__name__ + ": initialization failed; check model/dependencies/configuration"
+        # Local embedding index: ENABLED by default as the standard behaviour (a deployment opts
+        # out with {"semantic":{"enabled":false}} or PERSONAL_MEMORY_DISABLE_SEMANTIC=1). It is
+        # built LAZILY on the first search - never at construction - so startup stays cheap and
+        # offline, and any import/model failure is permanent and silent, degrading to the
+        # keyword+Hindsight channels. This is a relevance path that does not depend on the
+        # external engine returning similarity scores.
+        sem_cfg = self.config.get("semantic", {})
+        self._semantic_cfg = sem_cfg if isinstance(sem_cfg, dict) else {}
+        self._semantic_enabled = self.semantic is not None or (
+            bool(self._semantic_cfg.get("enabled", True)) and not _semantic_disabled_by_env())
+        self._semantic_failed = False
+        # The external Hindsight engine stays opt-in: it needs an operator URL/bank, so it is
+        # constructed eagerly only when explicitly configured.
+        hindsight_cfg = self.config.get("hindsight", {})
+        if hindsight_cfg.get("enabled") and self.hindsight is None:
+            try:
+                from .hindsight import Hindsight
+                self.hindsight = Hindsight(store, hindsight_cfg)
+            except Exception as error:
+                self.errors["hindsight"] = type(error).__name__ + ": initialization failed; check model/dependencies/configuration"
         # Learned re-ranking of the fused top-k. ENABLED by default as the standard behaviour;
         # a deployment opts out with {"rerank":{"enabled":false}}. The model is built LAZILY on
         # the first search (never at construction) so startup stays cheap and offline, and any
@@ -108,19 +123,49 @@ class Hybrid:
         self.graph_seed_top = self._bounded_int(graph.get("seed_top"), 6, 1, 16)
         self.graph_record_degree = self._bounded_int(graph.get("record_degree"), 6, 1, 16)
         self.graph_entity_degree = self._bounded_int(graph.get("entity_degree"), 16, 1, 64)
+        self._start = start
         if start:
-            for component in (self.semantic,self.hindsight):
+            for component in (self.semantic, self.hindsight):
                 if component:
-                    def work(engine=component):
-                        delay = 0
-                        while not self.stop.wait(delay):
-                            try:
-                                delay = 0.05 if engine.sync(batch=1) else 2
-                            except Exception as error:
-                                engine.last_error = type(error).__name__ + ": indexing failed; retry pending"
-                                delay = 10
-                    thread = threading.Thread(target=work, daemon=True, name="memory-index")
-                    thread.start(); self.threads.append(thread)
+                    self._start_index_thread(component)
+
+    def _start_index_thread(self, engine):
+        """Run an engine's incremental indexing journal off the request path."""
+        def work():
+            delay = 0
+            while not self.stop.wait(delay):
+                try:
+                    # Both indexes commit batches transactionally. Draining several records per
+                    # wake avoids one HTTP/LLM setup per Hindsight record and one SQLite
+                    # transaction per local embedding.
+                    delay = 0.05 if engine.sync(batch=8) else 2
+                except Exception as error:
+                    engine.last_error = type(error).__name__ + ": indexing failed; retry pending"
+                    delay = 10
+        thread = threading.Thread(target=work, daemon=True, name="memory-index")
+        thread.start(); self.threads.append(thread)
+
+    def _ensure_semantic(self):
+        """Build the local embedding index on first use. No-op when disabled/injected/failed.
+
+        Any import/model failure is recorded once and made permanent (never retried per query) so
+        retrieval degrades to the keyword+Hindsight channels and startup never blocks on the
+        embedding model.
+        """
+        if self.semantic is not None or not self._semantic_enabled or self._semantic_failed:
+            return self.semantic
+        try:
+            from .semantic import SemanticIndex
+            engine = SemanticIndex(self.store, self._semantic_cfg)
+        except Exception as error:
+            self.semantic = None
+            self._semantic_failed = True
+            self.errors["semantic"] = type(error).__name__ + ": semantic index unavailable; using keyword/hindsight"
+            return None
+        self.semantic = engine
+        if self._start:
+            self._start_index_thread(engine)
+        return self.semantic
 
     def close(self):
         self.stop.set()
@@ -140,6 +185,7 @@ class Hybrid:
         readiness), so a warmup failure just means the first query warms the cache instead.
         """
         probe = "warmup"
+        self._ensure_semantic()
         if self.semantic is not None:
             try:
                 self.semantic.embedder.query(probe)
@@ -168,12 +214,18 @@ class Hybrid:
 
     def status(self):
         result = self.store.status()
+        if self.semantic:
+            sem_status = self.semantic.status()
+        elif self._semantic_enabled and not self._semantic_failed:
+            sem_status = {"enabled": True, "ready": False, "lazy": True, "note": "built on first search"}
+        else:
+            sem_status = {"enabled": False}
         result.update(backend="hybrid_rrf", semantic_embeddings=self.semantic is not None,
-                      semantic=self.semantic.status() if self.semantic else {"enabled":False},
+                      semantic=sem_status,
                       hindsight=self.hindsight.status() if self.hindsight else {"enabled":False},
                       initialization_errors=self.errors,
                       capabilities=["keyword","temporal_filters","account_identity","evidence","pagination","query_variants"])
-        if self.semantic:
+        if self._semantic_enabled and not self._semantic_failed:
             result["capabilities"].append("semantic")
         if self.hindsight:
             result["capabilities"].append("hindsight_multistrategy")
@@ -397,7 +449,8 @@ class Hybrid:
         return ranked + tail, scores
 
     def search(self, query, limit=8, entity_id=None, source=None, after=None, before=None,
-               include_history=False, depth="balanced", queries=None, expand_entities=True):
+               include_history=False, depth="balanced", queries=None, expand_entities=True,
+               exclude_record_ids=None):
         required_text(query,"query",4000)
         if type(limit) is not int or not 1 <= limit <= 30:
             raise ValueError("limit must be 1..30; use browse cursors for complete stored evidence")
@@ -406,6 +459,11 @@ class Hybrid:
         if queries is not None and (not isinstance(queries,list) or len(queries)>4):
             raise ValueError("queries must contain at most four alternative or subquestion queries")
         variants = list(dict.fromkeys([query]+[required_text(q,"query variant",4000) for q in (queries or [])]))
+        if exclude_record_ids is None: exclude_record_ids=[]
+        if (not isinstance(exclude_record_ids,list) or len(exclude_record_ids)>100 or
+                any(not isinstance(rid,str) or not rid for rid in exclude_record_ids)):
+            raise ValueError("exclude_record_ids must contain at most 100 record IDs")
+        excluded=set(exclude_record_ids)
         if after: after=timestamp(after)
         if before: before=timestamp(before)
         if after and before and before<=after:
@@ -431,14 +489,15 @@ class Hybrid:
             seen=set()
             for rank,row in enumerate(rows,1):
                 rid=row["id"]
-                if (allowed is not None and rid not in allowed) or rid in seen: continue
+                if rid in excluded or (allowed is not None and rid not in allowed) or rid in seen: continue
                 seen.add(rid)
-                if channel == "semantic" and "similarity" in row:
+                if "similarity" in row:
                     similarities[rid] = max(similarities.get(rid, -1), row["similarity"])
                 scores[rid]+=weight/(60+rank); reasons[rid].add(channel)
                 if "span_start" in row: spans.setdefault(rid,(row["span_start"],row["span_end"]))
             counts[channel]=counts.get(channel,0)+len(seen)
 
+        semantic = self._ensure_semantic()
         futures=[]
         for variant in variants:
             lexical = self.store.search(variant,limit=pool_size,source=source,after=after,before=before,
@@ -446,8 +505,8 @@ class Hybrid:
             add("keyword",lexical["episodes"])
             add("claim_keyword",[{"id":c["record_id"]} for c in lexical["claims"]])
             claim_rows.update({c["id"]:c for c in lexical["claims"]})
-            if self.semantic:
-                futures.append(("semantic",self.pool.submit(self.semantic.candidates,variant,pool_size,allowed)))
+            if semantic:
+                futures.append(("semantic",self.pool.submit(semantic.candidates,variant,pool_size,allowed)))
             if self.hindsight:
                 futures.append(("hindsight",self.pool.submit(self.hindsight.candidates,variant,depth,source)))
         for channel,future in futures:

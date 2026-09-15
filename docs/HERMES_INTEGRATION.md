@@ -1,7 +1,11 @@
 # Hermes integration
 
-Current target: Hermes Agent `v2026.9.11` / v0.21.2, commit
-`939e45c91d751fadd94dcd1b873ac3cb44846213`.
+Current target: Hermes Agent `v2026.9.14` / v0.21.3, commit
+`345cd2b057a452236de401d3534b8502a7465e8d`.
+
+The active pin and file hashes are in `host-patch/manifest.json` and the packaged
+`personal_memory/host_contract.json`. Older patch files are historical bundles; the patch
+manager uses the active manifest. See [the provider-contract audit](HERMES_914_MEMORY_COVERAGE.md).
 
 ## Install
 
@@ -50,7 +54,7 @@ provider-store mode.
 - Managed memory-backed skills are verified before their contents are returned.
 
 The older native-history, cron/notepad, delivery and reset protections remain described in
-[HOST_BRIDGES.md](HOST_BRIDGES.md). The v2026.9.11 patch ports their shared bridge into the
+[HOST_BRIDGES.md](HOST_BRIDGES.md). The v2026.9.14 patch ports their shared bridge into the
 release's decomposed host modules.
 
 ## Upgrade and rollback

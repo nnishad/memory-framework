@@ -1,8 +1,8 @@
 # Current remediation status
 
 Version 0.8.0rc8 makes a managed Hindsight 0.9.2 runtime part of the default
-Hermes memory service, while retaining the rc7 canonical MEMORY/USER store and
-v2026.9.11 host bridge. See [the rc8 integration notes](docs/RC8_INTEGRATION.md).
+Hermes memory service, while retaining the rc7 canonical MEMORY/USER store. The current host patch targets Hermes v2026.9.14; see
+[the integration guide](docs/HERMES_INTEGRATION.md) and [RC8 lifecycle notes](docs/RC8_INTEGRATION.md).
 **Production qualification remains incomplete.**
 
 # Personal Memory for Hermes — 0.8.0rc8
@@ -15,7 +15,7 @@ accuracy of an untested model, personal archive or deployment.
 | Layer | Implemented behavior |
 | --- | --- |
 | Ingestion | Required versioned core, namespaced extensions, immutable source revisions, provenance receipts, atomic batches/cursors, WhatsApp/email/health export adapters |
-| Recall | Keyword/Hindsight by default, optional additional embeddings/HNSW, temporal and identity filters, progressive rounds, optional model query planner/reranker, duplicate context suppression |
+| Recall | Keyword/Hindsight by default, optional additional embeddings/HNSW, temporal and identity filters, progressive rounds, default graph/recency ranking and best-effort cross-encoder reranking, optional model planner/reranker adapters, duplicate context suppression |
 | Knowledge | Quoted beliefs with conflicts and validity, contextual preferences, dated typed relationships, bounded graph traversal, reviewed episode summaries |
 | Measurements | Metric/unit validation, immutable custom metric definitions, explicit conversions and SQL aggregates |
 | Consolidation | Immutable evidence snapshots, whole-source chunk partitioning, leased jobs, restartable cursor, local extractive or configured model adapter, pending proposals and independent review |
@@ -26,8 +26,9 @@ accuracy of an untested model, personal archive or deployment.
 
 ## Fresh installation
 
-Use Python 3.11+ with SQLite FTS5 and the pinned Hermes release `v2026.9.11`.
-From this extracted project:
+Use Python 3.11+ on Linux or macOS with SQLite FTS5 and the pinned Hermes release `v2026.9.14`.
+The service uses POSIX file locking; native Windows service deployment is not supported by
+the current launcher. From this extracted project:
 
 ```sh
 sh deployment/install.sh
@@ -68,6 +69,8 @@ Every new connector must satisfy [INGESTION.md](docs/INGESTION.md) and the bundl
 Schema. Unknown namespaced extensions are preserved. Structural acceptance does not verify
 source truth or automatically translate arbitrary extensions into typed measurements.
 Offline exports do not provide continuous provider sync or attachment/audio/OCR extraction.
+`import-health --subject-id <existing-entity-id>` also creates typed measurements for
+supported metrics; without that option the importer stores source records only.
 
 Hermes can discover structured-operation arguments through `personal_memory_knowledge`
 with operation `schema` and empty arguments. Administrators can call the same HTTP APIs
@@ -85,7 +88,7 @@ python -m personal_memory request /v1/intelligence-schema empty-object.json --he
 - [OPERATIONS.md](docs/OPERATIONS.md): deployment, monitoring, backup and recovery.
 - [HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md): pinned host compatibility and executed integration checks.
 - [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md): capability coverage and remaining qualification boundaries.
-- `VALIDATION.json`: machine-readable executed checks; older benchmarks retain their original scope.
+- `VALIDATION.json`: historical RC8 executed checks, not a fresh validation of this checkout; older benchmarks retain their original scope.
 
 Tests use synthetic evidence and controlled model/capability fixtures. A real AIAgent loop
 is exercised, but no real language-model learning effectiveness, personal archive, live
@@ -105,7 +108,7 @@ Hermes can now call `personal_memory_investigate` with independent evidence inte
 
 ## Hermes activation and upgrades
 
-The canonical native-store contract requires the hash-pinned host patch for v2026.9.11.
+The canonical native-store contract requires the hash-pinned host patch for v2026.9.14.
 The managed provider also installs the structured memory tool surface and request-planning
 guidance. Setup stamps the package version; doctor detects an outdated copied provider or
 running service. Both Hermes and the memory service must restart after an upgrade. Follow
@@ -113,4 +116,7 @@ running service. Both Hermes and the memory service must restart after an upgrad
 
 ## Full memory-surface audit
 
-The pinned Hermes source audit finds incomplete coverage beyond the main provider lifecycle. Read [the coverage matrix and confirmed gaps](docs/HERMES_MEMORY_COVERAGE_AUDIT.md), including reproduced recapture/forgetting gaps and TUI/desktop authorization limitations. Passing bridge tests must not be interpreted as full-memory integration or production qualification.
+The [v2026.9.14 provider-contract audit](docs/HERMES_914_MEMORY_COVERAGE.md) maps the current
+host hooks. The [earlier coverage audit](docs/HERMES_MEMORY_COVERAGE_AUDIT.md) preserves
+historical gaps; several have since been addressed by the host bridge. Hook coverage does
+not establish complete semantic forgetting or production qualification.

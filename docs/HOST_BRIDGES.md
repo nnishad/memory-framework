@@ -1,4 +1,4 @@
-> Current release: [rc6 remediation and acceptance](RC6_INTEGRATION.md). Earlier findings and test counts below retain their historical scope.
+> Current installation: [Hermes integration guide](HERMES_INTEGRATION.md). Dated deployment results below describe their recorded environments.
 
 # Hermes host integration — 0.8.0rc8
 

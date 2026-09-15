@@ -12,7 +12,7 @@ class InvestigationTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.store=Store(self.root/'memory.db');self.i=Intelligence(self.store)
-        self.backend=Hybrid(self.store,start=False);self.addCleanup(self.backend.close)
+        self.backend=Hybrid(self.store,{"semantic":{"enabled":False}},start=False);self.addCleanup(self.backend.close)
         self.engine=Investigation(self.store,self.backend,self.i);self.addCleanup(self.engine.close)
     def put(self,sid,text,source='email',date='2025-01-01T00:00:00Z'):
         return self.store.ingest([{'source':source,'source_id':sid,'text':text,'occurred_at':date}])['records'][0]['id']

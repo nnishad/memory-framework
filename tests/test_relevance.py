@@ -23,7 +23,7 @@ class RelevanceTests(unittest.TestCase):
     def test_search_and_adaptive_abstain(self):
         with tempfile.TemporaryDirectory() as tmp:
             store=Store(Path(tmp)/'memory.db');store.ingest([{'source':'test','source_id':'a','occurred_at':'2026-01-01T00:00:00Z','text':'My passport is in the cupboard.'}])
-            backend=Hybrid(store,start=False)
+            backend=Hybrid(store,{"semantic":{"enabled":False}},start=False)
             try:
                 for engine in [backend,AdaptiveRecall(store,backend)]:
                     result=engine.search('What is my blood type?')
@@ -37,7 +37,7 @@ class RelevanceTests(unittest.TestCase):
             store=Store(Path(tmp)/'memory.db')
             rid=store.ingest([{'source':'test','source_id':'a','occurred_at':'2026-01-01T00:00:00Z','text':'My office is here.'}])['records'][0]['id']
             store.claim('My office is here.',rid)
-            backend=Hybrid(store,start=False)
+            backend=Hybrid(store,{"semantic":{"enabled":False}},start=False)
             try:self.assertEqual(backend.search('What is my blood type?')['claims'],[])
             finally:backend.close()
     def test_incomplete_engine_does_not_prove_absence(self):

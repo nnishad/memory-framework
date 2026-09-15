@@ -91,6 +91,15 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(self.store.search("PostgreSQL", after="2025-01-01T00:00:00Z")["episodes"]), 1)
         self.assertEqual(len(self.store.search("PostgreSQL", source="email")["episodes"]), 1)
 
+    def test_compact_evidence_returns_one_text_copy_and_optional_span(self):
+        rid=self.ingest(record(text="alpha beta gamma"))
+        full=self.store.evidence(rid)
+        self.assertIn("metadata",full)
+        compact=self.store.evidence(rid,compact=True,start=6,end=10)
+        self.assertEqual(compact["text"],"beta")
+        self.assertTrue(compact["truncated"])
+        self.assertNotIn("ingestion_record",compact)
+
     def test_literal_fts_and_unicode(self):
         self.ingest(record(text="मुझे PostgreSQL chahiye"))
         self.assertTrue(self.store.search('PostgreSQL OR " --')["episodes"])
@@ -172,6 +181,34 @@ class ServerTests(HTTPFixture):
         self.assertEqual(box.pending(), 0)
         self.assertEqual(self.client.call("/v1/status")["records"], 1)
 
+    def test_message_capture_host_ids_are_durable_across_reopen(self):
+        class Offline:
+            def call(self, *args): raise ConnectionError("offline")
+        path = Path(self.tmp.name) / "capture.db"
+        box = Outbox(path, Offline())
+        box.mark_message_capture("s1", "user", "digestA", "id:m1")
+        box.mark_message_capture("s1", "user", "digestB")  # no host id => occurrence-counter fallback
+        box.close()
+        box = Outbox(path, Offline()); self.addCleanup(box.close)
+        self.assertEqual(box.captured_host_ids("s1"), {"id:m1"})  # the host-id ledger survived reopen
+        self.assertEqual(box.captured_count("s1", "user", "digestA"), 1)
+        self.assertEqual(box.captured_count("s1", "user", "digestB"), 1)
+
+    def test_preexisting_outbox_db_gains_host_id_ledger(self):
+        import sqlite3
+        class Offline:
+            def call(self, *args): raise ConnectionError("offline")
+        path = Path(self.tmp.name) / "legacy.db"
+        legacy = sqlite3.connect(path)  # a DB created before the host-id ledger existed
+        legacy.execute("CREATE TABLE pending(id TEXT PRIMARY KEY,payload TEXT,attempts INTEGER DEFAULT 0,last_error TEXT,created_at TEXT)")
+        legacy.execute("CREATE TABLE message_captures(session_id TEXT,role TEXT,content_digest TEXT,occurrences INTEGER,PRIMARY KEY(session_id,role,content_digest))")
+        legacy.commit(); legacy.close()
+        box = Outbox(path, Offline()); self.addCleanup(box.close)  # opening migrates it additively
+        with box.connect() as db:
+            self.assertTrue(db.execute("SELECT 1 FROM sqlite_master WHERE name='message_capture_ids'").fetchone())
+        box.mark_message_capture("s1", "user", "d", "id:9")
+        self.assertEqual(box.captured_host_ids("s1"), {"id:9"})
+
     def test_non_loopback_http_rejected(self):
         with self.assertRaises(ValueError): Client("http://example.com", self.token)
         with self.assertRaises(ValueError): create_server(Path(self.tmp.name), self.token, host="0.0.0.0")
@@ -240,6 +277,203 @@ class UpstreamContractTests(HTTPFixture):
         provider.outbox.flush()
         row = self.client.call("/v1/search", {"query": "SQLite"})["episodes"][0]
         self.assertTrue(row["source_id"].startswith("session-b/"))
+
+    def test_turn_capture_is_not_duplicated_and_current_input_is_not_recalled(self):
+        provider=self.provider()
+        provider.on_turn_start(1,"current-query-canary")
+        provider.sync_turn("current-query-canary","unrelated-response-token",
+                           messages=[{"role":"user","content":"current-query-canary"},
+                                     {"role":"assistant","content":"unrelated-response-token"}])
+        provider.on_pre_compress([{"role":"user","content":"current-query-canary"},
+                                  {"role":"assistant","content":"unrelated-response-token"}],require_checkpoint=True)
+        provider.on_session_end([{"role":"user","content":"current-query-canary"},
+                                 {"role":"assistant","content":"unrelated-response-token"}])
+        provider.outbox.flush()
+        self.assertEqual(self.client.call('/v1/status')["records"],2)
+        result=json.loads(provider.handle_tool_call('personal_memory_search',{'query':'current-query-canary'}))
+        self.assertEqual(result['episodes'],[])
+
+    def test_started_input_is_not_duplicated_when_sync_has_no_transcript(self):
+        provider=self.provider()
+        provider.on_turn_start(1,"same-input")
+        provider.sync_turn("same-input","same-answer")
+        provider.on_turn_start(2,"same-input")
+        provider.sync_turn("same-input","same-answer")
+        provider.outbox.flush()
+        self.assertEqual(self.client.call('/v1/status')["records"],4)
+
+    def test_prefetch_does_not_reinject_evidence_already_in_session(self):
+        self.client.call('/v1/ingest',{'items':[wire_record()]})
+        provider=self.provider()
+        result=provider.prefetch('PostgreSQL')
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline and "Untrusted personal" not in result:
+            time.sleep(.02);result=provider.prefetch('PostgreSQL')
+        self.assertIn("PostgreSQL",result)
+        provider._invalidate()
+        result=provider.prefetch('PostgreSQL')
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline and result:
+            time.sleep(.02);result=provider.prefetch('PostgreSQL')
+        self.assertEqual(result,"")
+
+    def test_pre_compress_rehydrates_previously_suppressed_evidence(self):
+        self.client.call('/v1/ingest',{'items':[wire_record()]})
+        provider=self.provider()
+        # Generous recall budget: this asserts evidence rehydrates, not that it does so within a
+        # fixed window; local-model inference (model-on pass) makes each background search slower.
+        wait=10
+        result=provider.prefetch('PostgreSQL')
+        deadline=time.monotonic()+wait
+        while time.monotonic()<deadline and "Untrusted personal" not in result:
+            time.sleep(.02);result=provider.prefetch('PostgreSQL')
+        self.assertIn("PostgreSQL",result)  # first recall injects the evidence
+        provider._invalidate()
+        result=provider.prefetch('PostgreSQL')
+        deadline=time.monotonic()+wait
+        while time.monotonic()<deadline and result:
+            time.sleep(.02);result=provider.prefetch('PostgreSQL')
+        self.assertEqual(result,"")  # still in context => suppressed, no empty envelope appended
+        # Compression evicts the injected evidence from the live transcript; the epoch bump forces
+        # the next automatic recall to rehydrate it instead of suppressing it forever.
+        provider.on_pre_compress([{"role":"user","content":"recall PostgreSQL"}],require_checkpoint=True)
+        provider._invalidate()
+        result=provider.prefetch('PostgreSQL')
+        deadline=time.monotonic()+wait
+        while time.monotonic()<deadline and "Untrusted personal" not in result:
+            time.sleep(.02);result=provider.prefetch('PostgreSQL')
+        self.assertIn("PostgreSQL",result)
+
+    def test_claim_fingerprint_change_reinjects_without_compression(self):
+        provider=self.provider();sid=provider.session_id
+        from personal_memory.provider import _claim_fingerprint
+        claim={"id":7,"record_id":"r1","text":"Amit uses PostgreSQL","status":"active",
+               "valid_from":None,"valid_to":None}
+        provider.mark_injected({"episodes":[],"claims":[claim]},sid)
+        retained=provider._retained_rows(sid)
+        # Unchanged claim in the same epoch is suppressed (not re-injected).
+        self.assertTrue(provider._row_retained(retained,"c:7",_claim_fingerprint(claim)))
+        # A correction changes status/validity => a new fingerprint => re-injected without compression.
+        corrected=dict(claim,status="superseded",valid_to="2024-06-01T00:00:00Z")
+        self.assertFalse(provider._row_retained(retained,"c:7",_claim_fingerprint(corrected)))
+        # Compression bumps the epoch: even the identical claim rehydrates.
+        provider._bump_injection_epoch(sid)
+        self.assertFalse(provider._row_retained(provider._retained_rows(sid),"c:7",_claim_fingerprint(claim)))
+
+    def test_explicit_default_search_does_not_reuse_the_narrow_prefetch(self):
+        self.client.call('/v1/ingest',{'items':[wire_record()]})
+        provider=self.provider();calls=0;real=provider.client.call
+        def counted(path,*args,**kwargs):
+            nonlocal calls
+            if path=='/v1/search':calls+=1
+            return real(path,*args,**kwargs)
+        provider.client.call=counted
+        provider.prefetch('PostgreSQL')
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline:
+            with provider.lock:
+                if ('session-a','PostgreSQL') not in provider.inflight:break
+            time.sleep(.02)
+        # A bare search resolves to balanced/8, which the fast/4 prefetch cannot cover, so it must
+        # run a real retrieval instead of silently downgrading to the cached narrow one.
+        result=json.loads(provider.handle_tool_call('personal_memory_search',{'query':'PostgreSQL'}))
+        self.assertTrue(result['episodes'])
+        self.assertNotIn('reused_automatic_prefetch',result['diagnostics'])
+        self.assertEqual(result['diagnostics']['depth'],'balanced')
+        self.assertEqual(calls,2)  # the prefetch search plus a real balanced/8 search
+
+    def test_explicit_fast_search_reuses_completed_automatic_prefetch(self):
+        self.client.call('/v1/ingest',{'items':[wire_record()]})
+        provider=self.provider();calls=0;real=provider.client.call
+        def counted(path,*args,**kwargs):
+            nonlocal calls
+            if path=='/v1/search':calls+=1
+            return real(path,*args,**kwargs)
+        provider.client.call=counted
+        provider.prefetch('PostgreSQL')
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline:
+            with provider.lock:
+                if ('session-a','PostgreSQL') not in provider.inflight:break
+            time.sleep(.02)
+        # An explicit search that asks for no more than the prefetch capability (fast/4) reuses it.
+        result=json.loads(provider.handle_tool_call('personal_memory_search',
+                                                    {'query':'PostgreSQL','depth':'fast','limit':4}))
+        self.assertTrue(result['episodes'])
+        self.assertTrue(result['diagnostics']['reused_automatic_prefetch'])
+        self.assertEqual(calls,1)
+
+    def test_host_message_ids_dedup_across_lifecycle_hooks(self):
+        provider=self.provider()
+        msgs=[{"role":"user","content":"canary","id":"u1"},
+              {"role":"assistant","content":"reply","id":"a1"}]
+        provider.sync_turn("canary","reply",messages=msgs)
+        provider.on_pre_compress(msgs,require_checkpoint=True)
+        provider.on_session_end(msgs)
+        provider.outbox.flush()
+        # Three hooks see the same two host messages; stable ids keep each captured exactly once.
+        self.assertEqual(self.client.call('/v1/status')["records"],2)
+        self.assertEqual(provider.outbox.captured_host_ids("session-a"),{"id:u1","id:a1"})
+
+    def test_host_message_id_dedups_when_occurrence_counter_would_not(self):
+        provider=self.provider()
+        # Two distinct user messages share identical content; sync_turn captures the turn once and
+        # records only the last occurrence's host id, leaving occurrences(1) below the count(2).
+        provider.sync_turn("ping","",messages=[{"role":"user","content":"ping","id":"p1"},
+                                               {"role":"user","content":"ping","id":"p2"}])
+        provider.outbox.flush()
+        # A later turn re-delivers "ping" (still two occurrences, so the counter alone would capture
+        # again) but the last occurrence carries the already-captured host id => recognised as a dup.
+        provider.sync_turn("ping","ack",messages=[{"role":"user","content":"ping","id":"p1"},
+                                                  {"role":"user","content":"ping","id":"p2"},
+                                                  {"role":"assistant","content":"ack","id":"a1"}])
+        provider.outbox.flush()
+        ping=self.client.call('/v1/search',{"query":"ping"})["episodes"]
+        self.assertEqual(len(ping),1)  # "ping" captured exactly once despite the counter under-count
+        self.assertIn("id:p2",provider.outbox.captured_host_ids("session-a"))
+
+    def test_host_message_id_helpers_prefer_stable_id_and_fall_back(self):
+        provider=self.provider()
+        self.assertEqual(provider._host_message_id({"id":"m1","role":"user"}),"id:m1")
+        self.assertEqual(provider._host_message_id({"platform_message_id":7}),"platform_message_id:7")
+        self.assertEqual(provider._host_message_id({"message_id":"x"}),"message_id:x")
+        self.assertIsNone(provider._host_message_id({"role":"user","content":"no id"}))
+        self.assertIsNone(provider._host_message_id("not a dict"))
+        rows=[{"role":"user","content":"x","id":"1"},{"role":"user","content":"x","id":"2"}]
+        self.assertEqual(provider._last_message(rows,"user","x")["id"],"2")  # the current occurrence
+        self.assertIsNone(provider._last_message(rows,"assistant","x"))
+
+    def test_tool_result_attributes_lineage_without_suppressing_recall(self):
+        self.client.call('/v1/ingest',{'items':[wire_record()]})
+        provider=self.provider()
+        # A model-requested search result is provenance, not prompt injection.
+        search=json.loads(provider.handle_tool_call('personal_memory_search',{'query':'PostgreSQL'}))
+        self.assertTrue(search['episodes'])
+        self.assertTrue(provider.lineage.exposed('session-a'))  # lineage attributed
+        self.assertEqual(provider.exposure.get('session-a',{}).get('rows',{}),{})  # nothing marked injected
+        # The next automatic recall still injects the evidence (it was never suppressed).
+        result=provider.prefetch('PostgreSQL')
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline and "Untrusted personal" not in result:
+            time.sleep(.02);result=provider.prefetch('PostgreSQL')
+        self.assertIn("PostgreSQL",result)
+
+    def test_session_switch_is_scoped_to_the_switching_sessions(self):
+        provider=self.provider()  # session-a
+        # Seed state for an unrelated live session that is not part of either switch.
+        with provider.lock:
+            provider.current_input_record_ids['session-x']=['rec_x']
+            provider.started_inputs[('session-x','dx')]=1
+            provider.exposure['session-x']={'epoch':0,'rows':{'e:9':{'epoch':0,'fp':'fx'}}}
+        provider.on_session_switch('session-b')  # a -> b
+        provider.on_session_switch('session-c')  # b -> c
+        with provider.lock:
+            # The unrelated session survives both switches (the old code called a global clear()).
+            self.assertEqual(provider.current_input_record_ids['session-x'],['rec_x'])
+            self.assertEqual(provider.started_inputs[('session-x','dx')],1)
+            self.assertEqual(provider.exposure['session-x']['rows']['e:9']['fp'],'fx')
+            self.assertEqual(provider.session_id,'session-c')
+            self.assertNotIn('session-b',provider.current_input_record_ids)
 
     def test_checkpoint_and_non_primary_write_guard(self):
         provider = self.provider()

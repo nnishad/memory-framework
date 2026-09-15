@@ -85,7 +85,7 @@ class ClearBankTests(BankFixture):
         self.put(record(1), record(2))
         adapter.sync()
         self.assertEqual(len(self.remote), 2)
-        backend = Hybrid(self.store, {"rerank": {"enabled": False}}, hindsight=adapter, start=False)
+        backend = Hybrid(self.store, {"rerank": {"enabled": False}, "semantic": {"enabled": False}}, hindsight=adapter, start=False)
         self.addCleanup(backend.close)
         result = reset.reset(self.store, "canonical", backend=backend)
         self.assertTrue(result["external_engine"]["cleared"])
@@ -100,20 +100,20 @@ class ClearBankTests(BankFixture):
         self.assertEqual(result["external_engine"]["reason"], "no external engine bound")
 
     def test_clear_external_is_a_noop_without_hindsight(self):
-        backend = Hybrid(self.store, {"rerank": {"enabled": False}}, start=False)
+        backend = Hybrid(self.store, {"rerank": {"enabled": False}, "semantic": {"enabled": False}}, start=False)
         self.addCleanup(backend.close)
         self.assertEqual(backend.clear_external(), {"cleared": False, "reason": "no external engine bound"})
 
 
 class WarmupTests(BankFixture):
     def test_warmup_is_safe_without_learned_models(self):
-        backend = Hybrid(self.store, {"rerank": {"enabled": False}}, start=False)
+        backend = Hybrid(self.store, {"rerank": {"enabled": False}, "semantic": {"enabled": False}}, start=False)
         self.addCleanup(backend.close)
         self.assertEqual(backend.warmup(), {"semantic": False, "hindsight": False, "rerank_loaded": False})
 
     def test_warmup_primes_the_external_engine_and_swallows_failure(self):
         adapter = Hindsight(self.store, self.cfg)
-        backend = Hybrid(self.store, {"rerank": {"enabled": False}}, hindsight=adapter, start=False)
+        backend = Hybrid(self.store, {"rerank": {"enabled": False}, "semantic": {"enabled": False}}, hindsight=adapter, start=False)
         self.addCleanup(backend.close)
         self.assertTrue(backend.warmup()["hindsight"])
 

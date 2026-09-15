@@ -1,4 +1,4 @@
-# Governed learning — current release 0.7.0rc1
+# Governed learning — current release 0.8.0rc8
 
 The complete current specification is [FRAMEWORK.md](FRAMEWORK.md). The earlier 0.6.0a1
 learning substrate is now connected to immutable evaluation suites, active-baseline replay,

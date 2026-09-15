@@ -1,22 +1,28 @@
-> Current release: [rc6 remediation and acceptance](RC6_INTEGRATION.md). Earlier findings and test counts below retain their historical scope.
+> Current integration: [Hermes v2026.9.14 guide](HERMES_INTEGRATION.md) and [host bridges](HOST_BRIDGES.md). Earlier findings and test counts below retain their historical scope.
 
-# Operating release 0.7.0rc1
+# Operating release 0.8.0rc8
 
 This is a tested release candidate for one owner's local Hermes profile. It is not a
-certified deployment of the user's archive. `VALIDATION.json` records executed checks;
+certified deployment of the user's archive. `VALIDATION.json` records historical RC8 executed checks;
 this runbook identifies the checks that need the actual host, data and Hermes version.
 
 ## Install and start
 
-Use Python 3.11+ on Linux with SQLite FTS5. From the extracted release directory:
+Use Python 3.11+ on Linux or macOS with SQLite FTS5. The service uses POSIX `fcntl`
+locking, so the current launcher does not support native Windows. The systemd template
+below is Linux-specific. From the extracted release directory, with Hermes stopped:
 
 ```sh
 sh deployment/install.sh
+python scripts/manage_hermes_host_patch.py apply --hermes-root /path/to/hermes-agent
 ~/.local/share/hermes-memory/venv/bin/python ~/.hermes/personal-memory/run_service.py
 ```
 
-The installer selects this provider and disables the built-in fact/profile stores,
-preserving their files. Existing settings are preserved. Stop an existing service
+The installer selects this provider and sets `memory.store: provider`, keeping the native
+`memory` tool enabled while storing MEMORY/USER entries in the canonical versioned store.
+Existing MEMORY.md/USER.md files are preserved but are not used in provider-store mode.
+The active host patch targets v2026.9.14; see [HERMES_INTEGRATION.md](HERMES_INTEGRATION.md).
+Existing settings are preserved, with Hindsight normalized to enabled. Stop an existing service
 and back it up before upgrading. Install dependencies in the service virtualenv;
 the copied Hermes provider uses only the standard library and the host's provider API.
 
@@ -41,8 +47,9 @@ the internet. This release does not implement multi-tenant row isolation or clus
 
 ## Owner sessions and configuration
 
-This release targets a fresh installation. It does not require an existing database or
-perform a legacy-install migration. Private bootstrap settings and credentials live in
+Fresh installations are the primary target. Opening a supported older canonical database
+applies schema migrations through version 8; this does not imply automatic migration of
+every legacy host artifact or install layout. Private bootstrap settings and credentials live in
 `personal-memory/settings.json`. The native Hermes wizard/dashboard behavior settings
 live in owner-only `personal-memory/config.json`; these override matching private settings.
 The supported public keys are `port`, `prefetch_wait_ms`, `session_access`, and `retrieval`.
@@ -145,10 +152,31 @@ settings take precedence. The first startup downloads Hindsight's local embeddin
 Failed or unacknowledged retains remain journaled; forgetting also schedules remote deletion
 for uncertain writes. A failed Hindsight deletion blocks further retention. Hindsight results
 only propose canonical document IDs and cannot bypass local visibility rules or tombstones.
+Normal indexing sends up to eight documents per synchronous retain request. Contract failures and
+ambiguous timeouts fall back to per-document isolation; clear connection/service outages back off the
+batch. Lineage-only fan-in records are not sent to Hindsight because they contain no independent
+evidence.
 `doctor` requires the package and a live default engine. The embedded pg0 database is derived
 retrieval state, not the source of truth; canonical SQLite and its deletion ledger remain the
 recovery authority. Operators choosing `managed:false` must provide an HTTP(S) `url` and own
 that external service's retention, replicas, credentials and backups.
+
+## Reset and stale Hindsight profiles
+
+`python -m personal_memory reset --hermes-home <profile> --confirm` performs a canonical
+logical reset, advances the write epoch, invalidates derived memory, and synchronously
+attempts to clear the configured Hindsight bank. Check `external_engine` in the result:
+canonical reset can complete even if external clearing fails. Restart sessions to discard
+already loaded prompts. Native transcripts, external sources and backups are outside this
+reset; it is not secure physical erasure.
+
+`python -m personal_memory prune-hindsight --hermes-home <profile>` reports stale
+framework-owned embedded profiles/instances. Add `--apply` to remove eligible stale entries;
+the active profile is preserved. Stop the service before applying removal so a daemon does
+not hold those files. This is separate from clearing the active bank.
+
+Retrieval models warm in the background at ASGI startup. See [FRAMEWORK.md](FRAMEWORK.md)
+for the default graph/recency ranking, optional cross-encoder dependencies and disable settings.
 
 ## Back up and rehearse recovery
 
@@ -210,7 +238,7 @@ and review that release's compatibility instructions. Provider-selection rollbac
 (`python -m personal_memory rollback`) restores Hermes configuration and preserves data;
 it does not downgrade a database schema.
 
-Executed here: 55 tests, 13 actual-release bridge checks, a complete AIAgent loop with a
+Historical storage/retrieval validation recorded 55 tests, 13 actual-release bridge checks, a complete AIAgent loop with a
 local deterministic model-protocol fixture, and CLI install/import/backup/restore smoke
 checks. A 10,000-record keyword-only workload with eight clients measured p50 129.65 ms
 and p95 175.99 ms over 100 queries; acknowledged records survived SIGKILL and restart.
@@ -235,8 +263,8 @@ Deployment acceptance requires:
    is not a clinical interpretation engine. Procedural/prospective notes need the host's
    skills/scheduler for execution. Automatic inferred claims need evidence review.
 
-The CI workflow is included but has not been run on GitHub. It tests supported Python
-versions and audits installed dependencies; it is a release gate. Local service and Hermes-runtime dependency audits are included;
+No GitHub Actions workflow is present in this checkout, and the recorded validation does not
+claim an executed CI matrix. Local service and Hermes-runtime dependency audits are included;
 zero reported known vulnerabilities only describes those scanned environments. `constraints-tested.txt` pins tested direct dependencies,
 not every transitive dependency. Capture a platform-specific lock/SBOM for deployment.
 
@@ -248,7 +276,7 @@ References: [Hermes MemoryProvider](https://hermes-agent.nousresearch.com/docs/d
 
 ## Current framework operations
 
-Schema version is now 6. See FRAMEWORK.md for the full configuration and API contracts.
+Schema version is 8. See FRAMEWORK.md for the full configuration and API contracts.
 Run setup with `--auto-consolidate` to enable local continuous consolidation. Optional model,
 capability and delivery adapters live under private settings `intelligence`; they cannot be
 selected by agent tool arguments. Changed adapter declarations need new jobs/procedure bindings.
@@ -269,6 +297,7 @@ task intents. Preserve its newest version when restoring an old encrypted backup
 these intents before returning the isolated database. Do not combine an old canonical database
 with an old ledger and assume later cancellations or forgetting are preserved.
 
-Historical performance numbers above belong to the earlier storage/retrieval build. Current
-functional counts and fixtures are recorded in VALIDATION.json. Full personal-archive throughput,
+Historical performance numbers above belong to the earlier storage/retrieval build. Historical RC8
+functional counts and fixtures are recorded in VALIDATION.json; subsequent source changes
+are not certified by that report. Full personal-archive throughput,
 model learning quality and actual reminder delivery are not established by those numbers.

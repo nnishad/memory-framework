@@ -24,10 +24,13 @@ class Fixture(unittest.TestCase):
     def put(self,*records):
         return [r["id"] for r in self.store.ingest(list(records))["records"]]
     def hybrid(self,**kw):
-        # Isolate the deterministic fusion/recency/gate path: the external learned re-ranker
-        # is exercised separately with an injected fake, so no real model is ever loaded here.
+        # Isolate the deterministic fusion/recency/gate path: the external learned re-ranker and
+        # the (default-on, lazy) local embedding index are exercised separately with injected
+        # fakes, so no real model is ever loaded here. An explicitly injected semantic engine still
+        # wins because Hybrid treats a non-None semantic as enabled regardless of this config.
         config=dict(kw.pop("config",None) or {})
         rerank=dict(config.get("rerank") or {}); rerank.setdefault("enabled",False); config["rerank"]=rerank
+        semantic=dict(config.get("semantic") or {}); semantic.setdefault("enabled",False); config["semantic"]=semantic
         h=Hybrid(self.store,config,start=False,**kw); self.addCleanup(h.close); return h
 
 
@@ -130,6 +133,27 @@ class RetrievalTests(Fixture):
         h=Hybrid(self.store,start=False); self.addCleanup(h.close)
         self.assertFalse(h._rerank_enabled)  # operator/test override without any config change
 
+    def test_semantic_is_enabled_by_default_and_lazy(self):
+        import os
+        saved=os.environ.pop("PERSONAL_MEMORY_DISABLE_SEMANTIC",None)
+        try:
+            h=Hybrid(self.store,start=False); self.addCleanup(h.close)
+            self.assertTrue(h._semantic_enabled)  # production standard: on, no opt-in required
+            self.assertIsNone(h.semantic)  # but the index is never built at construction (startup stays cheap/offline)
+            status=h.status()
+            self.assertIn("semantic",status["capabilities"])
+            self.assertTrue(status["semantic"]["lazy"])  # reported as built-on-first-search
+        finally:
+            if saved is not None: os.environ["PERSONAL_MEMORY_DISABLE_SEMANTIC"]=saved
+
+    def test_semantic_env_killswitch_forces_it_off(self):
+        import os
+        os.environ["PERSONAL_MEMORY_DISABLE_SEMANTIC"]="1"
+        self.addCleanup(os.environ.pop,"PERSONAL_MEMORY_DISABLE_SEMANTIC",None)
+        h=Hybrid(self.store,start=False); self.addCleanup(h.close)
+        self.assertFalse(h._semantic_enabled)  # operator/test override without any config change
+        self.assertNotIn("semantic",h.status()["capabilities"])
+
     def test_rerank_noops_when_explicitly_disabled(self):
         a,b=self.put(record(1,"alpha answer here"),record(2,"beta answer here"))
         h=self.hybrid(config={"rerank":{"enabled":False}})
@@ -193,6 +217,36 @@ class RetrievalTests(Fixture):
         self.put(record(2,"garage"))
         result=self.hybrid(hindsight=Broken()).search("garage")
         self.assertTrue(result["episodes"]); self.assertIn("hindsight",result["diagnostics"]["failures"])
+
+    def test_hindsight_semantic_score_can_pass_the_canonical_gate(self):
+        rid=self.put(record(1,"the violet folder is in the bedroom cupboard"))[0]
+        class Remote:
+            def candidates(self,*args):return [{"id":rid,"similarity":0.8}]
+            def status(self):return {"enabled":True}
+        result=self.hybrid(hindsight=Remote()).search("where is my passport",expand_entities=False)
+        self.assertEqual(result["episodes"][0]["id"],rid)
+        self.assertEqual(result["episodes"][0]["relevance"]["semantic_similarity"],0.8)
+
+    def test_scoreless_hindsight_candidates_pass_the_gate_via_local_semantic(self):
+        try: from personal_memory.semantic import SemanticIndex
+        except ImportError: self.skipTest("numpy unavailable")
+        # A pinned runtime that returns candidates WITHOUT similarity scores: relevance must not
+        # depend on the external engine scoring. The local semantic index carries the paraphrase.
+        rid=self.put(record(1,"the garage fixed the engine"))[0]
+        class Remote:
+            def candidates(self,*args):return [{"id":rid}]  # no "similarity" key at all
+            def status(self):return {"enabled":True}
+        engine=SemanticIndex(self.store,embedder=DeterministicEmbedder()); engine.sync()
+        result=self.hybrid(hindsight=Remote(),semantic=engine).search("mechanic",expand_entities=False)
+        self.assertEqual([r["id"] for r in result["episodes"]],[rid])
+        relevance=result["episodes"][0]["relevance"]
+        self.assertFalse(relevance["lexical_anchors"])  # no shared token; accepted semantically
+        self.assertGreaterEqual(relevance["semantic_similarity"],0.5)
+
+    def test_current_input_can_be_excluded_without_hiding_older_evidence(self):
+        old,current=self.put(record(1,"passport is in the violet folder"),record(2,"where is my passport"))
+        result=self.hybrid().search("passport",exclude_record_ids=[current],expand_entities=False)
+        self.assertEqual([row["id"] for row in result["episodes"]],[old])
 
 
 class GraphActivationTests(Fixture):
@@ -282,7 +336,8 @@ class HindsightContractTests(Fixture):
                 data=json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 observed.append((self.path,data))
                 if self.path.endswith("/memories/recall"):
-                    self.answer({"results":[{"document_id":rid,"text":"generated statement"} for rid in remote]})
+                    self.answer({"results":[{"document_id":rid,"text":"generated statement",
+                                             "scores":{"semantic":0.83}} for rid in remote]})
                 else:
                     for item in data["items"]: remote[item["document_id"]]=item
                     self.answer({"success":True,"async":False,"items_count":len(data["items"])})
@@ -296,7 +351,8 @@ class HindsightContractTests(Fixture):
         a,b=self.put(record(1),record(2,source="health"))
         self.assertEqual(adapter.sync(),1); self.assertNotIn(b,remote)
         self.assertEqual(Hindsight(self.store,cfg).sync(),0)
-        self.assertEqual(adapter.candidates("mechanic","deep")[0]["id"],a)
+        candidate=adapter.candidates("mechanic","deep")[0]
+        self.assertEqual(candidate["id"],a);self.assertAlmostEqual(candidate["similarity"],0.83)
         self.assertEqual(observed[-1][1]["budget"],"high")
         self.assertEqual(remote[a]["update_mode"],"replace")
         self.assertEqual(remote[a]["metadata"]["canonical_record_id"],a)

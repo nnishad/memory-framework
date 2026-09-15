@@ -35,7 +35,7 @@ class AdaptiveRecall:
 
         if not isinstance(subqueries,list) or len(subqueries)>4:raise ValueError('At most four subqueries')
         subqueries=list(dict.fromkeys(required_text(q,'subquery',4000) for q in subqueries))
-        if set(filters)-{'entity_id','source','after','before','include_history'}:raise ValueError('Unsupported recall filters')
+        if set(filters)-{'entity_id','source','after','before','include_history','exclude_record_ids'}:raise ValueError('Unsupported recall filters')
         stages=[('fast',[]),('balanced',subqueries),('deep',subqueries)]
         pool={};claims={};trace=[];coverage=[];started=overall_started;stop='call_budget'
         for index,(depth,variants) in enumerate(stages[:max_calls]):

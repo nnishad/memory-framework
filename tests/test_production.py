@@ -80,6 +80,18 @@ class ProductionTests(unittest.TestCase):
         changed=item();changed['occurred_at']='2025-01-01T00:00:00Z'
         with self.assertRaises(ValueError):box.enqueue([changed])
 
+    def test_outbox_can_flush_only_the_current_capture(self):
+        from unittest.mock import patch
+        received=[]
+        class Endpoint:
+            def call(self,path,payload):received.extend(i['source_id'] for i in payload['items']);return {'records':[]}
+        with patch('personal_memory.outbox.threading.Thread.start'):
+            box=Outbox(self.root/'outbox.db',Endpoint())
+        first=box.enqueue([item('old')]);second=box.enqueue([item('current')])
+        box.flush(keys=[second])
+        self.assertEqual(received,['current']);self.assertEqual(box.pending(),1)
+        box.flush();self.assertEqual(received,['current','old'])
+
     @unittest.skipUnless(importlib.util.find_spec('jsonschema'),'jsonschema production extra required')
     def test_registered_extension_schema_is_enforced_at_server_boundary(self):
         from personal_memory.ingestion import ContractError
@@ -143,6 +155,51 @@ class ASGIIntegrationTests(unittest.TestCase):
 
 
 class IndexFailureTests(unittest.TestCase):
+    def test_hindsight_retains_records_in_one_batch_and_skips_lineage_nodes(self):
+        from personal_memory.hindsight import Hindsight
+        from test_retrieval import record
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'memory.db')
+            store.ingest([record('first'),record('second'),record('lineage',source='hermes-lineage')])
+            engine=Hindsight(store,{'url':'http://127.0.0.1:8767','bank_id':'test','sources':['*']})
+            requests=[]
+            class Remote:
+                def call(self,path,payload=None,**kwargs):
+                    requests.append(payload);return {'success':True,'async':False,'items_count':len(payload['items'])}
+            engine.write_client=Remote()
+            self.assertEqual(engine.sync(batch=8),2)
+            self.assertEqual(len(requests),1)
+            self.assertEqual(len(requests[0]['items']),2)
+            self.assertEqual(engine.status()['pending_records'],0)
+
+    def test_hindsight_isolates_contract_failure_but_backs_off_service_outage(self):
+        from personal_memory.hindsight import Hindsight
+        from test_retrieval import record
+        with tempfile.TemporaryDirectory() as tmp:
+            store=Store(Path(tmp)/'memory.db');ids=store.ingest([record('bad'),record('good')])['records']
+            engine=Hindsight(store,{'url':'http://127.0.0.1:8767','bank_id':'test','sources':['*']})
+            calls=[]
+            class ContractFailure:
+                def call(self,path,payload=None,**kwargs):
+                    calls.append(len(payload['items']))
+                    if len(payload['items'])>1 or payload['items'][0]['document_id']==ids[0]['id']:
+                        raise ServiceError(422)
+                    return {'success':True,'async':False}
+            engine.write_client=ContractFailure();engine.sync(batch=8)
+            self.assertEqual(calls,[2,1,1])
+            self.assertEqual(engine.status()['synced_records'],1)
+            self.assertEqual(engine.status()['pending_records'],1)
+
+            other=Store(Path(tmp)/'other.db');other.ingest([record('one'),record('two')])
+            outage=Hindsight(other,{'url':'http://127.0.0.1:8767','bank_id':'other','sources':['*']})
+            outage_calls=[]
+            class Outage:
+                def call(self,path,payload=None,**kwargs):
+                    outage_calls.append(len(payload['items']));raise ServiceError(503)
+            outage.write_client=Outage();outage.sync(batch=8)
+            self.assertEqual(outage_calls,[2])
+            self.assertEqual(outage.status()['pending_records'],2)
+
     def test_bad_dimension_does_not_poison_restart_or_later_records(self):
         from personal_memory.semantic import SemanticIndex
         from test_retrieval import DeterministicEmbedder,record

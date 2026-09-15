@@ -278,7 +278,8 @@ class Store(Catalog):
         return {"source": source, "source_id": source_id, "affected_records": sorted(affected),
                 "future_revisions_blocked": True, "scope": "Framework source item and tracked dependents; native files and external copies are not erased"}
 
-    def evidence(self, record_id):
+    def evidence(self, record_id, compact=False, start=None, end=None):
+        if not isinstance(compact,bool):raise ValueError("compact must be boolean")
         with self.connect() as db:
             row = db.execute("SELECT * FROM records WHERE id=? AND deleted=0", (record_id,)).fetchone()
             if not row:
@@ -286,6 +287,17 @@ class Store(Catalog):
             result = dict(row)
             result["metadata"] = json.loads(result["metadata"])
             result["occurred_at"] = result["occurred_at"] or None
+            text=result["text"]
+            if start is not None or end is not None:
+                start=0 if start is None else start;end=len(text) if end is None else end
+                if (type(start) is not int or type(end) is not int or start<0 or end<start or
+                        start>len(text) or end>len(text)):raise ValueError("Invalid evidence span")
+                result["text"]=text[start:end]
+                result.update(span_start=start,span_end=end,truncated=start>0 or end<len(text))
+            if compact:
+                keys=("id","source","source_id","revision","occurred_at","kind","text",
+                      "span_start","span_end","truncated")
+                return {k:result[k] for k in keys if k in result}
             receipt=db.execute("SELECT envelope FROM ingestion_receipts WHERE record_id=? ORDER BY observed_at DESC LIMIT 1",(record_id,)).fetchone()
             if receipt:
                 result["ingestion_record"]={**json.loads(receipt[0]),

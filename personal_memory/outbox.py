@@ -33,6 +33,15 @@ class Outbox:
             db.execute("""CREATE TABLE IF NOT EXISTS observation_receipts(
                 id TEXT PRIMARY KEY,state TEXT NOT NULL,reason TEXT,record_ids TEXT NOT NULL,
                 created_at TEXT NOT NULL,updated_at TEXT NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS message_captures(
+                session_id TEXT NOT NULL,role TEXT NOT NULL,content_digest TEXT NOT NULL,
+                occurrences INTEGER NOT NULL,PRIMARY KEY(session_id,role,content_digest))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS tool_observations(
+                session_id TEXT NOT NULL,call_id TEXT NOT NULL,
+                PRIMARY KEY(session_id,call_id))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS message_capture_ids(
+                session_id TEXT NOT NULL,host_id TEXT NOT NULL,
+                PRIMARY KEY(session_id,host_id))""")
         self.path.chmod(0o600)
         self.thread = threading.Thread(target=self._run, daemon=True, name="personal-memory-outbox")
         self.thread.start()
@@ -121,6 +130,50 @@ class Outbox:
         with self.connect() as db:
             return db.execute("SELECT count(*) FROM pending").fetchone()[0]
 
+    def captured_count(self, session_id, role, content_digest):
+        with self.connect() as db:
+            row=db.execute("SELECT occurrences FROM message_captures WHERE session_id=? AND role=? AND content_digest=?",
+                           (session_id,role,content_digest)).fetchone()
+        return row[0] if row else 0
+
+    def captured_counts(self, session_id):
+        """Load one session's deduplication counters with one SQLite read."""
+        with self.connect() as db:
+            rows=db.execute("SELECT role,content_digest,occurrences FROM message_captures WHERE session_id=?",
+                            (session_id,)).fetchall()
+        return {(role,content_digest):occurrences for role,content_digest,occurrences in rows}
+
+    def captured_host_ids(self, session_id):
+        """Canonical host message ids already captured for this session, with one SQLite read."""
+        with self.connect() as db:
+            return {row[0] for row in db.execute(
+                "SELECT host_id FROM message_capture_ids WHERE session_id=?",(session_id,))}
+
+    def mark_message_capture(self, session_id, role, content_digest, host_id=None):
+        """Record one durably queued transcript occurrence.
+
+        The counter survives provider restarts and lets checkpoint/session-end hooks fill gaps
+        without storing the same message again under another lifecycle-specific source ID. When
+        the transcript carries a canonical host message id it is recorded alongside the counter,
+        so retries, truncation and reordering that would collide on content+occurrence stay
+        unambiguous.
+        """
+        with self.connect() as db:
+            db.execute("""INSERT INTO message_captures VALUES(?,?,?,1)
+                ON CONFLICT(session_id,role,content_digest)
+                DO UPDATE SET occurrences=occurrences+1""",(session_id,role,content_digest))
+            if host_id:
+                db.execute("INSERT OR IGNORE INTO message_capture_ids VALUES(?,?)",(session_id,host_id))
+
+    def observed_tools(self, session_id):
+        with self.connect() as db:
+            return {row[0] for row in db.execute(
+                "SELECT call_id FROM tool_observations WHERE session_id=?",(session_id,))}
+
+    def mark_tool_observed(self, session_id, call_id):
+        with self.connect() as db:
+            db.execute("INSERT OR IGNORE INTO tool_observations VALUES(?,?)",(session_id,call_id))
+
     def _has_forgotten_parent(self, items):
         parents = sorted({p for item in items for p in item.get("provenance", {}).get("parent_record_ids", [])})
         for start in range(0, len(parents), 100):
@@ -154,11 +207,20 @@ class Outbox:
                     return
                 cursor = key
 
-    def flush(self, force=True):
+    def flush(self, force=True, keys=None):
+        keys=set(keys) if keys is not None else None
         with self.delivery_lock:
-            self._purge_forgotten_dead_letters()
+            if keys is None:self._purge_forgotten_dead_letters()
             with self.connect() as db:
-                rows = db.execute("SELECT id,payload,created_at,attempts,fingerprint FROM pending WHERE next_attempt<=? ORDER BY created_at LIMIT 20",(float("inf") if force else time.time(),)).fetchall()
+                due=float("inf") if force else time.time()
+                if keys:
+                    ordered=sorted(keys);marks=','.join('?' for _ in ordered)
+                    rows=db.execute("SELECT id,payload,created_at,attempts,fingerprint FROM pending WHERE next_attempt<=? AND id IN ("+marks+") ORDER BY created_at",
+                                    [due,*ordered]).fetchall()
+                elif keys is not None:
+                    rows=[]
+                else:
+                    rows=db.execute("SELECT id,payload,created_at,attempts,fingerprint FROM pending WHERE next_attempt<=? ORDER BY created_at LIMIT 20",(due,)).fetchall()
             for key, raw, queued_at, attempts, fingerprint in rows:
                 if self.stop.is_set():break
                 try:

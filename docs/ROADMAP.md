@@ -1,4 +1,4 @@
-# Current release: 0.7.0rc1
+# Current release: 0.8.0rc8
 
 Core framework modules are implemented and connected: ingestion, recall, structured knowledge,
 consolidation, evaluation, governed promotion, capabilities, tasks and recovery. See

@@ -1,4 +1,4 @@
-> Current release: [rc6 remediation and acceptance](RC6_INTEGRATION.md). Earlier findings and test counts below retain their historical scope.
+> Current integration: [Hermes v2026.9.14 guide](HERMES_INTEGRATION.md) and [host bridges](HOST_BRIDGES.md). Earlier findings and test counts below retain their historical scope.
 
 # Hermes memory coverage audit
 

@@ -1,6 +1,9 @@
 # RC8 default Hindsight integration
 
-Target: Hermes Agent v2026.9.11 and Hindsight 0.9.2.
+Original RC8 validation target: Hermes Agent v2026.9.11 and Hindsight 0.9.2.
+The current checkout retains package version 0.8.0rc8 and Hindsight 0.9.2 but targets
+Hermes v2026.9.14; see [HERMES_INTEGRATION.md](HERMES_INTEGRATION.md). Historical
+validation counts and hashes describe the original run, not every subsequent change.
 
 RC8 turns the previous Hindsight HTTP adapter into a zero-configuration service feature.
 Hindsight's 0.9.2 slim API, embedded-db and local-ONNX packages are required dependencies.

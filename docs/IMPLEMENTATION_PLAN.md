@@ -1,4 +1,4 @@
-# Capability coverage — 0.7.0rc1
+# Capability coverage — 0.8.0rc8
 
 The former implementation backlog now has concrete framework modules and extension points.
 The table distinguishes implemented behavior from deployment qualification and optional product scope.
@@ -7,7 +7,7 @@ The table distinguishes implemented behavior from deployment qualification and o
 | --- | --- | --- |
 | Outcome learning | Evidence-backed outcomes, immutable proposals, evaluation/promotion and retraction | Observable outcome reports need truthful source adapters; no arbitrary task-success oracle |
 | Evaluation | Immutable suites, active-baseline replay, subprocess runner, strict JSON comparison, scoped automatic promotion and crash reconciliation | Real-model/held-out task quality must be measured; fixture performance is not model quality |
-| Retrieval | Progressive rounds, optional model planner/reranker, duplicate context suppression, explicit filters and budgets | No universal calibrated abstention or guarantee of complete inference |
+| Retrieval | Managed Hindsight plus keyword retrieval, default graph/recency ranking, best-effort cross-encoder, progressive rounds, optional model adapters, duplicate suppression and filters | No universal calibrated abstention or guarantee of complete inference |
 | Consolidation | Durable source cursor, full-source span partitioning, exact snapshots, model/extractive adapters, schema validation, review and dependency invalidation | Extractive default does not invent facts; model proposals remain unverified |
 | Beliefs | Structured values, dates, scoped preferences, conflict sets, explicit correction and domain coverage gates | No automated theorem proving or silent selection of truth from conflicting sources |
 | Procedures | Evaluated lesson -> administrator-bound capability -> authorized execution job -> output validation | No compilation/execution of arbitrary model-generated code; external effect idempotency belongs to capability adapter |

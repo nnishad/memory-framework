@@ -187,7 +187,7 @@ class IntelligenceTests(unittest.TestCase):
         from personal_memory.adaptive import AdaptiveRecall
         from personal_memory.retrieval import Hybrid
         second=self.store.ingest_contract([item('copy')])['records'][0]['id']
-        backend=Hybrid(self.store,start=False);self.addCleanup(backend.close)
+        backend=Hybrid(self.store,{"semantic":{"enabled":False}},start=False);self.addCleanup(backend.close)
         adaptive=AdaptiveRecall(self.store,backend,{'planner':{'entrypoint':'test:planner'},'reranker':{'entrypoint':'test:reranker'}})
         def adapter(entry,config,request,timeout):
             return {'queries':['repair']} if entry.endswith('planner') else {'ordered_ids':[r['id'] for r in reversed(request['documents'])]}

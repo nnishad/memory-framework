@@ -60,7 +60,7 @@ class ContractTests(unittest.TestCase):
         self.assertIsNone(self.store.evidence(rid)["occurred_at"])
         self.assertIsNone(self.store.search("bicycle")["episodes"][0]["occurred_at"])
         self.assertFalse(self.store.browse(before="2027-01-01T00:00:00Z")["episodes"])
-        engine=Hybrid(self.store,start=False);self.addCleanup(engine.close)
+        engine=Hybrid(self.store,{"semantic":{"enabled":False}},start=False);self.addCleanup(engine.close)
         self.assertFalse(engine.search("bicycle",before="2027-01-01T00:00:00Z")["episodes"])
 
     def test_new_observation_is_not_new_source_revision(self):

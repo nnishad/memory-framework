@@ -17,6 +17,9 @@ Evidence extractions (regenerable):
 `.e2e/hermes_914_bridge_calls.txt` (native callers of `memory_bridge`),
 `.e2e/hermes_914_provider_calls.txt` (completeness sweep of every provider hook).
 
+Line references and test counts below belong to the dated audit and can drift as source
+changes. Hook coverage is not proof of every end-to-end memory behavior or production quality.
+
 ## Verdict
 
 **Our provider satisfies the entire v2026.9.14 memory contract.** Hermes reaches a memory
@@ -247,8 +250,8 @@ accurately-scoped caveats, not integration breaks:
    duplicate scheduler execution state or the context compressor's summaries — the host stays
    authoritative, per the framework's authority-boundary design.
 
-4. **Hindsight LLM wiring is a deploy-env concern**, not a contract gap: the retain backlog
-   only drains when a working `HINDSIGHT_API_LLM_*` provider is configured (see
+4. **Hindsight LLM wiring is a deploy-env concern**, not a contract gap: LLM-backed extraction requires a working provider. Without provider credentials,
+   automatic `none` mode supports retention and recall without LLM extraction (see
    `hindsight_runtime.py` auto-provider selection).
 
 ## §H — Delta vs the 2026.8.31 audit
@@ -278,9 +281,9 @@ parallel-plan autonomy, multimodal provenance depth) remain **intended** boundar
   string-resolved hook list in §B — the silent-disable surface is the highest-risk area when
   Hermes bumps.
 - Re-run the three `.e2e` extractions + the 17-assertion `check_hermes_release.py`,
-  `check_host_bridges.py`, `check_native_history.py`, and the 178-test suite on every Hermes
+  `check_host_bridges.py`, `check_native_history.py`, and the current test suite on every Hermes
   pin change; §A/§B enumerate what must still resolve by name.
 
-**Conclusion:** against v2026.9.14 the memory bridge is complete — every Hermes memory use
-case routes to a framework handler, and none of the three provider-reach channels has an
-unimplemented member. No code change is required to satisfy the 9.14 contract.
+**Conclusion:** against v2026.9.14 the memory bridge is complete — the audit found no missing member in the three enumerated provider-reach channels.
+This result does not establish that every memory use case is enforced end to end; current
+changes still require runtime checks against the pinned host.

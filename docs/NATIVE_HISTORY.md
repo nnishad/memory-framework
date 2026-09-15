@@ -1,8 +1,11 @@
-> Current release: [rc6 remediation and acceptance](RC6_INTEGRATION.md). Earlier findings and test counts below retain their historical scope.
+> Current integration: [Hermes v2026.9.14 guide](HERMES_INTEGRATION.md) and [host bridges](HOST_BRIDGES.md). Earlier findings and test counts below retain their historical scope.
 
 # Native Hermes history integration
 
-Version: 0.8.0rc4. Pinned host: Hermes v2026.8.31. This is an administrative connector for a local profile, not a replacement for native `session_search` or a background watcher.
+Framework: 0.8.0rc8. Current pinned host: Hermes v2026.9.14. The administrative connector
+described here was introduced in rc4. It does not replace native `session_search` or run a
+background watcher. The current host bridge also synchronizes authorized native history on
+read; see [HOST_BRIDGES.md](HOST_BRIDGES.md).
 
 ## Operation
 
