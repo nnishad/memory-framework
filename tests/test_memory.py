@@ -144,6 +144,18 @@ class ServerTests(HTTPFixture):
         with self.assertRaises(RuntimeError): self.client.call("/v1/ingest", {"items": []})
         self.assertEqual(self.client.call("/v1/status")["records"], 0)
 
+    def test_contract_rejection_is_self_correcting_over_http(self):
+        from personal_memory.client import ServiceError
+        # An empty hub read used to be a bare 400 the model could not act on; it is now a 422 whose
+        # detail names the exact contract, so a small model can correct the call instead of retrying.
+        with self.assertRaises(ServiceError) as caught:
+            self.client.call("/v1/intelligence/read", {})
+        self.assertEqual(caught.exception.status, 422)
+        self.assertEqual(caught.exception.path, "$")
+        self.assertIn("operation and arguments", str(caught.exception))
+        # A read that supplies only the operation succeeds without an explicit empty arguments object.
+        self.assertIn("learning_states", self.client.call("/v1/intelligence/read", {"operation": "quality"}))
+
     def test_restart_outbox_delivers_and_deduplicates(self):
         class Offline:
             def call(self, *args): raise ConnectionError("offline")

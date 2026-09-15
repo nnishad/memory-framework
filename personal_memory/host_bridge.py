@@ -68,10 +68,32 @@ def check_delivery(home, job_id, targets, run_id='', content=None):
     return not targets or set(map(tuple, targets)) <= configured
 
 
+def local_process_caller():
+    """True when no host transport is bound to this context, i.e. the caller is this process.
+
+    The interactive CLI never binds a transport: every `bind_transport` call site lives in the
+    gateway, desktop and voice turn paths. A remote turn therefore always has one bound before it
+    reaches a native-history read, including an unauthenticated websocket, which the bridge also
+    reports as a missing caller identity. Asking the transport is the only way to tell the local
+    owner apart from that remote caller, so the decision is made here rather than by treating an
+    unnamed context as an owner.
+    """
+    try:
+        from tui_gateway.transport import current_transport
+    except Exception:
+        return False
+    return current_transport() is None
+
+
 def authorize_native(home, context):
     from agent.memory_bridge import MemoryHostContext, MemoryReadScope
     if isinstance(context, MemoryReadScope):
         return context.allowed and Path(context.home).resolve() == Path(home).resolve()
+    if context is None and local_process_caller():
+        # Unscoped reads inside the local process are the owner's own session: compression and
+        # continuity lookups run there and have no transport to be named by. Denying them left the
+        # interactive CLI unable to compress context at all.
+        context = MemoryHostContext(str(Path(home).resolve()), 'local_owner')
     if isinstance(context, MemoryHostContext):
         return context_allowed(home, load_settings(home).get('session_access', {}),
                                {'host_context':context, 'platform':'desktop'}) is True

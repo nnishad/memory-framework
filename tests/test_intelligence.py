@@ -129,6 +129,19 @@ class IntelligenceTests(unittest.TestCase):
         with self.assertRaises(AccessDenied):service.dispatch('/v1/workflow/enqueue',{'type':'evaluate'},agent)
         self.assertIn('learning_states',service.dispatch('/v1/intelligence/read',{'operation':'quality','arguments':{}},agent))
 
+    def test_hub_read_contract_is_self_correcting(self):
+        from personal_memory.ingestion import ContractError
+        service=MemoryService(self.root/'hub-service','a'*40,principals=[{'token':'g'*40,'role':'agent'}]);self.addCleanup(service.close)
+        agent=service.authenticate('Bearer '+'g'*40)
+        # A read may omit arguments entirely; the shape check fills the empty object.
+        self.assertIn('learning_states',service.dispatch('/v1/intelligence/read',{'operation':'quality'},agent))
+        # An empty body names the exact contract through a typed detail, not a bare rejection.
+        with self.assertRaises(ContractError) as missing:service.dispatch('/v1/intelligence/read',{},agent)
+        self.assertEqual(missing.exception.path,'$')
+        # An unknown operation points the caller at the schema listing so a small model can recover.
+        with self.assertRaises(ContractError) as unknown:service.dispatch('/v1/intelligence/read',{'operation':'nope','arguments':{}},agent)
+        self.assertEqual(unknown.exception.path,'$.operation')
+
     def test_domain_coverage_gates_quantified_beliefs(self):
         self.i.domain(domain='repairs',required_sources=['custom-notes'],scope='all repair notes',actor='admin')
         with self.assertRaises(ValueError):self.belief(quantifier='none',domain='repairs')

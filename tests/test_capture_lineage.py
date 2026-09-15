@@ -70,6 +70,38 @@ class CaptureLineageTests(fixtures.HTTPFixture):
         with self.assertRaisesRegex(RuntimeError, 'Checkpoint incomplete'):
             p.on_pre_compress([{'role': 'assistant', 'content': 'quartz-harbour-582'}], require_checkpoint=True)
 
+    def test_replayed_truncated_memory_result_after_live_exposure_keeps_the_turn(self):
+        p = self.provider()
+        rid = self.seed_and_recall(p)  # the live observation attributes rid to this session
+        truncated = '{"episodes": [{"id": "' + rid  # compaction rewrote the host transcript copy
+        messages = [
+            {'role': 'user', 'content': 'Independent user note fern-orbit-823'},
+            {'role': 'assistant', 'tool_calls': [{'id': 'r1', 'function': {'name': 'personal_memory_search', 'arguments': '{"query":"orchid-cobalt-739"}'}}]},
+            {'role': 'tool', 'tool_call_id': 'r1', 'content': truncated},
+            {'role': 'assistant', 'content': 'orchid-cobalt-739'}]
+        p.sync_turn(messages[0]['content'], messages[3]['content'], messages=messages)
+        p.outbox.flush()
+        # A replay the host truncated has nothing left to attribute, so it must not widen the block
+        # and must not cost the user their turn: the answer is still captured against live evidence.
+        self.assertIsNone(p.capture_warning)
+        self.assertEqual(p.lineage.parents(p.session_id), [rid])
+        self.assertTrue(self.client.call('/v1/search', {'query': 'fern-orbit-823'})['episodes'])
+        self.assertTrue(self.client.call('/v1/search', {'query': 'orchid-cobalt-739'})['episodes'])
+
+    def test_live_unparseable_memory_result_without_exposure_blocks_but_preserves_user_row(self):
+        p = self.provider()
+        ack = p.observe_tool_result('personal_memory_search', {'query': 'x'}, 'not-json', metadata={})
+        self.assertEqual(ack['state'], 'withheld')
+        # Nothing was attributed live, so the conservative block applies to generated content.
+        with self.assertRaisesRegex(ValueError, 'unparseable memory tool result'):
+            p.lineage.parents(p.session_id)
+        p.sync_turn('Independent user note violet-lantern-923', 'Generated echo orchid-cobalt-739')
+        p.outbox.flush()
+        self.assertTrue(self.client.call('/v1/search', {'query': 'violet-lantern-923'})['episodes'])
+        self.assertFalse(self.client.call('/v1/search', {'query': 'orchid-cobalt-739'})['episodes'])
+        with p.outbox.connect() as db:
+            self.assertIn('withheld', [r[0] for r in db.execute('SELECT state FROM observation_receipts')])
+
     def test_interrupted_user_input_committed_before_completion(self):
         p = self.provider()
         p.on_turn_start(1, 'Fictional interrupted note amber-pine-592')

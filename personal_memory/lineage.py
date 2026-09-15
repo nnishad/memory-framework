@@ -40,6 +40,16 @@ class ExposureLedger:
         with self.outbox.connect() as db:
             db.executemany("INSERT OR IGNORE INTO exposures VALUES(?,?)", [(session_id, rid) for rid in ids])
 
+    def exposed(self, session_id):
+        """Whether any canonical record has been attributed to this session.
+
+        Attribution is decided when a result is first observed, so a later replay that the host
+        truncated has nothing left to attribute and must not widen the block.
+        """
+        with self.outbox.connect() as db:
+            return db.execute("SELECT EXISTS(SELECT 1 FROM exposures WHERE session_id=?)",
+                              (session_id,)).fetchone()[0] == 1
+
     def block(self, session_id, reason):
         with self.outbox.connect() as db:
             db.execute("INSERT OR REPLACE INTO untracked_exposure VALUES(?,?)", (session_id, reason))

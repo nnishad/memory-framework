@@ -273,6 +273,15 @@ with tempfile.TemporaryDirectory(prefix='hermes-host-bridges-') as temp:
             else: raise AssertionError('Withheld host event silently acknowledged')
         checks.append('withheld host events have durable typed receipts and propagate to the native caller')
 
+        from personal_memory.host_bridge import authorize_native, local_process_caller
+        # The interactive CLI never binds a transport, so an unscoped native read there is the owner's
+        # own session (compression and continuity lookups); denying it disabled compaction entirely.
+        assert local_process_caller() and authorize_native(home, None) is True
+        # The same missing identity while a transport IS bound is a remote caller and must stay denied.
+        with patch('tui_gateway.transport.current_transport', return_value=object()):
+            assert not local_process_caller() and authorize_native(home, None) is False
+        checks.append('unscoped local-process native read is authorized as the owner while a bound transport with no caller identity stays denied')
+
     finally:
         for a in agents: a.close()
         for p in providers: p.shutdown()

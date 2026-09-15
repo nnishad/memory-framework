@@ -59,6 +59,11 @@ class Client:
                 try:
                     payload = json.loads(error.read(4096))
                     detail = payload.get("error", "Request rejected")
+                    # A contract rejection carries the caller's own validation detail. Without it a
+                    # small model cannot correct the call and retries the same shape until it gives up.
+                    message = payload.get("message")
+                    if isinstance(message, str) and message:
+                        detail = "%s (%s: %s)" % (detail, payload.get("path") or "$", message)
                 except Exception:
                     payload = {}
                     detail = "Request rejected"

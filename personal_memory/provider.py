@@ -319,7 +319,7 @@ class PersonalMemoryProvider(MemoryProvider):
         # Use transcript identity to distinguish repeated identical turns in a session.
         context_id = digest(messages) if messages else "no-transcript"
         rid = digest([sid, context_id, user_content, assistant_content])
-        self._capture_tool_results(messages or [], sid)
+        self._replay_tool_results(messages or [], sid)
         for role, content in (("user", user_content), ("assistant", assistant_content)):
             if content:
                 self._capture_event("hermes", f"turn/{rid}/{role}", {role: content},
@@ -332,7 +332,7 @@ class PersonalMemoryProvider(MemoryProvider):
             raise RuntimeError("A primary initialized memory provider is required for a checkpoint")
         rows = [m for m in messages if isinstance(m, dict) and m.get("role") in {"user", "assistant"}
                 and not m.get("_compressed_summary")]
-        self._capture_tool_results(messages, self.session_id)
+        self._replay_tool_results(messages, self.session_id)
         ident = digest([self.session_id, rows])
         complete = True
         for index, row in enumerate(rows):
@@ -374,6 +374,18 @@ class PersonalMemoryProvider(MemoryProvider):
         self._invalidate()
         return {"capture_ids":capture_ids,"record_ids":record_ids,"state":"queued"}
 
+    def _replay_tool_results(self, messages, sid):
+        """Observe the host transcript without letting lineage enforcement abort the caller.
+
+        Every withheld capture writes its own durable receipt, so a raise escaping from here would
+        lose the whole turn without a trace: the user's own words are original evidence and are
+        still captured, and generated rows are withheld one at a time by `_capture_event`.
+        """
+        try:
+            self._capture_tool_results(messages, sid)
+        except ValueError as error:
+            self.capture_warning = str(error)
+
     def _capture_tool_results(self,messages,sid):
         calls={}
         call_arguments = {}
@@ -412,9 +424,16 @@ class PersonalMemoryProvider(MemoryProvider):
         if str(tool_name).startswith('personal_memory_'):
             if isinstance(decoded, dict) and self.lineage:
                 self.lineage.add(sid, decoded)
-                return {'state': 'observed', 'record_ids': self.lineage.compact_parents(sid)}
-            if self.lineage: self.lineage.block(sid, 'unparseable memory tool result')
-            return {'state': 'withheld', 'reason': 'unparseable memory tool result'}
+                try:
+                    return {'state': 'observed', 'record_ids': self.lineage.compact_parents(sid)}
+                except ValueError as error:
+                    # Enforcement belongs in the receipt, never in the caller's control flow.
+                    self.capture_warning = str(error)
+                    return {'state': 'withheld', 'reason': str(error)}
+            reason = 'unparseable memory tool result'
+            if self.lineage and not self._attributed_replay(metadata, sid):
+                self.lineage.block(sid, reason)
+            return {'state': 'withheld', 'reason': reason}
         if tool_name == 'session_search':
             proof = decoded.get('_memory_read', {}) if isinstance(decoded, dict) else {}
             if isinstance(proof, dict) and isinstance(proof.get('record_ids'), list):
@@ -432,6 +451,16 @@ class PersonalMemoryProvider(MemoryProvider):
             self.on_host_event('skill_change', {'tool_call_id': call_id, 'tool': tool_name,
                 'arguments': args, 'result': decoded, 'verified': False})
         return observation or {'state': 'withheld', 'reason': self.capture_warning or 'capture unavailable'}
+
+    def _attributed_replay(self, metadata, sid):
+        """True when an unparseable transcript copy has already been attributed live.
+
+        The live observation always sees exactly the JSON this service returned; only the host's
+        transcript copy is truncated or rewritten by compaction. Blocking the session for that
+        would punish it for the size of our own payload. With nothing attributed yet there is no
+        live observation to fall back on, so the conservative block still applies.
+        """
+        return metadata.get('status') == 'replayed' and self.lineage.exposed(sid)
 
     def on_delegation(self,task,result,*,child_session_id="",**kwargs):
         payload={"task":task,"result":result,"child_session_id":child_session_id}

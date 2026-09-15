@@ -253,10 +253,15 @@ class MemoryService:
 
     def _dispatch(self,path,args,principal):
         if path in {'/v1/intelligence/read','/v1/intelligence/write'}:
-            if set(args)!={'operation','arguments'} or not isinstance(args['arguments'],dict):raise ValueError('Expected operation and arguments')
-            operations=self.hub_reads if path.endswith('/read') else self.hub_writes
-            target=operations.get(args['operation'])
-            if target is None:raise ValueError('Unknown intelligence operation')
+            read=path.endswith('/read')
+            if read and 'arguments' not in args: args={**args,'arguments':{}}
+            if set(args)!={'operation','arguments'} or not isinstance(args['arguments'],dict):
+                raise ContractError('$','Expected exactly operation and arguments'
+                                    +('; a read may omit arguments' if read else ''))
+            operations=self.hub_reads if read else self.hub_writes
+            target=operations.get(args['operation']) if isinstance(args['operation'],str) else None
+            if target is None:
+                raise ContractError('$.operation','Unknown intelligence operation; the schema operation lists them')
             return self.dispatch(target,args['arguments'],principal)
         if path not in self.routes and path not in self.learning_routes:raise KeyError("Unknown endpoint")
         self.authorize(principal,path,args)
