@@ -1,5 +1,6 @@
 """Shared application boundary for production ASGI and the local test transport."""
 import hmac
+import logging
 import threading
 import time
 from pathlib import Path
@@ -7,6 +8,9 @@ from pathlib import Path
 from .backend import load_backend
 from .ingestion import RECORD_SCHEMA, ContractError, validate_batch
 from .store import Store
+from .trace import new_trace, get_trace, bind_trace, log_call, sanitize_trace
+
+LOG = logging.getLogger(__name__)
 
 READ_PATHS={"/v1/search","/v1/evidence","/v1/entity","/v1/entities","/v1/timeline",
             "/v1/browse","/v1/connections","/v1/status","/v1/generation","/v1/health","/v1/ready","/v1/ingestion-schema","/v1/recall","/v1/investigate","/v1/learning/browse"}
@@ -212,7 +216,42 @@ class MemoryService:
                     outcome='unknown', evidence_ids=[receipt['id']], actor='native-host-observer')
         return result
 
-    def dispatch(self,path,args,principal):
+    def dispatch(self, path, args, principal, trace_id=None):
+        # The intelligence hub below resolves to a concrete route via a nested dispatch; that
+        # inner call sees an already-bound trace and defers to _dispatch, so one external call
+        # produces exactly one summary line carrying one trace id.
+        if get_trace():
+            return self._dispatch(path, args, principal)
+        with bind_trace(sanitize_trace(trace_id) or new_trace()):
+            started = time.monotonic()
+            try:
+                result = self._dispatch(path, args, principal)
+            except Exception as error:
+                log_call(logging.WARNING, path, started, ok=False, role=principal.get("role"),
+                         error=type(error).__name__)
+                raise
+            fields = self._summary(result) if LOG.isEnabledFor(logging.INFO) else {}
+            log_call(logging.INFO, path, started, role=principal.get("role"), **fields)
+            return result
+
+    @staticmethod
+    def _summary(result):
+        """Cheap, level-guarded outcome metrics so a single INFO line is enough to triage."""
+        if not isinstance(result, dict):
+            return {}
+        out = {}
+        if isinstance(result.get("episodes"), list): out["episodes"] = len(result["episodes"])
+        if isinstance(result.get("records"), list): out["records"] = len(result["records"])
+        if "retrieval_status" in result: out["status"] = result["retrieval_status"]
+        diag = result.get("diagnostics")
+        if isinstance(diag, dict):
+            cand = diag.get("candidates")
+            if isinstance(cand, dict) and cand: out["cand"] = sum(v for v in cand.values() if isinstance(v, int))
+            if diag.get("failures"): out["failures"] = len(diag["failures"])
+            if isinstance(diag.get("elapsed_ms"), int): out["rt_ms"] = diag["elapsed_ms"]
+        return out
+
+    def _dispatch(self,path,args,principal):
         if path in {'/v1/intelligence/read','/v1/intelligence/write'}:
             if set(args)!={'operation','arguments'} or not isinstance(args['arguments'],dict):raise ValueError('Expected operation and arguments')
             operations=self.hub_reads if path.endswith('/read') else self.hub_writes

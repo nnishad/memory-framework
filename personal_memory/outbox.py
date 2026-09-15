@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .common import digest, now
+from .trace import LOG, debug_enabled
 from . import __version__
 
 
@@ -74,6 +75,7 @@ class Outbox:
             db.execute("INSERT OR IGNORE INTO observation_receipts VALUES(?,?,?,?,?,?)",
                        (key,"queued",None,json.dumps(ids),stamp,stamp))
         self.wake.set()
+        if debug_enabled(): LOG.debug("outbox enqueue key=%s items=%s", key[:12], len(items))
         return key
 
     @staticmethod
@@ -176,9 +178,11 @@ class Outbox:
                             db.execute("DELETE FROM pending WHERE id=?",(key,))
                             db.execute("UPDATE observation_receipts SET state='failed',reason=?,updated_at=? WHERE id=?",
                                        (type(error).__name__,now(),key))
+                            LOG.warning("outbox dead-lettered key=%s attempts=%s error=%s", key[:12], attempts, type(error).__name__)
                         else:
                             db.execute("UPDATE pending SET attempts=attempts+1,last_error=?,next_attempt=? WHERE id=?",
                                        (type(error).__name__,time.time()+min(300,2**min(attempts+1,8)),key))
+                            if debug_enabled(): LOG.debug("outbox retry key=%s attempts=%s error=%s", key[:12], attempts + 1, type(error).__name__)
                     continue
                 with self.connect() as db:
                     db.execute("INSERT OR IGNORE INTO delivered VALUES(?,?,?)", (key, now(),fingerprint))

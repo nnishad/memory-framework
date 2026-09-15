@@ -7,6 +7,7 @@ from pathlib import Path
 from .ingestion import ContractError
 from .curated import VersionConflict
 from .service import MemoryService,AccessDenied
+from .trace import TRACE_RESPONSE_HEADER, new_trace, sanitize_trace
 
 MAX_BODY=2*1024*1024
 
@@ -65,17 +66,22 @@ class Application:
                     await send({"type":"lifespan.shutdown.complete"});return
             return
         if scope["type"]!="http":return
+        trace = new_trace()
         async def respond(code,data):
+            if code>=400 and isinstance(data,dict):data={**data,"trace":trace}
             raw=json.dumps(data,ensure_ascii=False,allow_nan=False).encode()
             await send({"type":"http.response.start","status":code,"headers":[
                 (b"content-type",b"application/json"),(b"cache-control",b"no-store"),
-                (b"x-content-type-options",b"nosniff"),(b"content-length",str(len(raw)).encode())]})
+                (b"x-content-type-options",b"nosniff"),(b"content-length",str(len(raw)).encode()),
+                (TRACE_RESPONSE_HEADER,trace.encode())]})
             await send({"type":"http.response.body","body":raw})
         headers={}
         for key,value in scope["headers"]:
             if key in headers and key in {b"authorization",b"content-length"}:
                 await respond(400,{"error":"Duplicate request header"});return
             headers[key]=value
+        inbound=sanitize_trace(headers.get(b"x-personal-memory-trace",b""))
+        if inbound:trace=inbound
         if not self.service:
             await respond(503,{"error":"Service starting"});return
         try:principal=self.service.authenticate(headers.get(b"authorization",b"").decode())
@@ -100,7 +106,7 @@ class Application:
                 raw=await asyncio.wait_for(read_body(),timeout=10)
                 args=strict_json(raw)
                 if not isinstance(args,dict):raise ValueError("JSON body must be an object")
-                result=await asyncio.get_running_loop().run_in_executor(self.executor,self.service.dispatch,scope["path"],args,principal)
+                result=await asyncio.get_running_loop().run_in_executor(self.executor,self.service.dispatch,scope["path"],args,principal,trace)
                 code=503 if scope["path"]=="/v1/ready" and not result["ready"] else 200
                 await respond(code,result)
             except ContractError as error:await respond(422,{"error":"Ingestion contract rejected","path":error.path,"message":error.message})

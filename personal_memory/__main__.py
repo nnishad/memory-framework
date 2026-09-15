@@ -140,6 +140,10 @@ def main(argv=None):
         if args.backend:cfg["backend"]=args.backend
         # Fresh database/WAL files should inherit private permissions.
         os.umask(0o077)
+        # The service owns its process, so it configures the correlation logger here; one INFO
+        # summary line is emitted per dispatch and shared trace ids become greppable.
+        from .trace import configure_logging
+        configure_logging()
         if args.transport=="asgi":
             import uvicorn
             from .asgi import Application

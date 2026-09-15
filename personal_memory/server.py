@@ -7,6 +7,7 @@ from .backend import load_backend
 from .store import Store
 from .ingestion import RECORD_SCHEMA,ContractError
 from .curated import VersionConflict
+from .trace import TRACE_HEADER, new_trace, sanitize_trace
 
 LOG = logging.getLogger(__name__)
 MAX_BODY = 2 * 1024 * 1024
@@ -31,15 +32,23 @@ def create_server(data_dir, token, host="127.0.0.1", port=8766, backend=None, re
             self.connection.settimeout(10)
 
         def respond(self, code, data):
+            # Surface the trace on failures (additively) and echo it as a header so a client can
+            # correlate a returned error id with the server log line emitted for the same call.
+            trace = getattr(self, "_trace", "")
+            if code >= 400 and trace and isinstance(data, dict):
+                data = {**data, "trace": trace}
             raw = json.dumps(data, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(raw)))
             self.send_header("Cache-Control", "no-store")
+            if trace:
+                self.send_header(TRACE_HEADER, trace)
             self.end_headers()
             self.wfile.write(raw)
 
         def do_POST(self):
+            self._trace = sanitize_trace(self.headers.get(TRACE_HEADER, "")) or new_trace()
             authorization = self.headers.get("Authorization", "")
             try: principal=service.authenticate(authorization)
             except AccessDenied:
@@ -57,7 +66,7 @@ def create_server(data_dir, token, host="127.0.0.1", port=8766, backend=None, re
                 args = strict_json(self.rfile.read(size))
                 if not isinstance(args, dict):
                     raise ValueError("JSON body must be an object")
-                result = service.dispatch(self.path,args,principal)
+                result = service.dispatch(self.path,args,principal,self._trace)
                 self.respond(200, result)
             except AccessDenied:
                 self.respond(403,{"error":"Operation outside credential scope"})

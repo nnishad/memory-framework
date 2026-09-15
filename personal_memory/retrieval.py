@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from .common import required_text, timestamp
 from .relevance import RelevanceGate
+from .trace import LOG, debug_enabled
 
 
 def _epoch(value):
@@ -384,6 +385,7 @@ class Hybrid:
                 live = {r[0] for r in db.execute("SELECT id FROM records WHERE " + " AND ".join(clauses), params)}
             allowed = live if allowed is None else allowed & live
         pool_size = {"fast":32,"balanced":96,"deep":256}[depth]
+        engines = {}
         scores, reasons, spans, claim_rows = defaultdict(float), defaultdict(set), {}, {}
         failures, counts = dict(self.errors), {}
         similarities = {}; rejected = 0
@@ -412,11 +414,14 @@ class Hybrid:
             if self.hindsight:
                 futures.append(("hindsight",self.pool.submit(self.hindsight.candidates,variant,depth,source)))
         for channel,future in futures:
+            began = time.monotonic()
             try:
                 add(channel,future.result(timeout=max(0.01,25-(time.monotonic()-started))))
+                if debug_enabled(): engines[channel]=round((time.monotonic()-began)*1000)
             except Exception as error:
                 future.cancel()
                 failures[channel]=type(error).__name__ + ": retrieval incomplete"
+                if debug_enabled(): engines[channel]="fail"
 
         # Graph activation exposes source-backed neighbours as leads; it never asserts they
         # are the answer or the same person. Two bounded sources feed one fusion channel:
@@ -486,6 +491,10 @@ class Hybrid:
                 if current and (include_history or current["status"]=="active"):
                     claims.append(dict(current))
         state=self.status()
+        if debug_enabled():
+            LOG.debug("search depth=%s variants=%s engines_ms=%s candidates=%s rejected=%s failures=%s ms=%s",
+                      depth, len(variants), engines or "-", counts or "-", rejected, failures or "-",
+                      round((time.monotonic()-started)*1000))
         return {"episodes":episodes,"claims":claims[:limit],"retrieval":"hybrid_rrf","coverage":state["sources"],
                 "retrieval_status":"candidates_found" if episodes else ("retrieval_incomplete" if failures or (self.semantic and not state["semantic"].get("ready",False)) else "no_relevant_evidence"),
                 "evidence_sufficiency":"not_established",
