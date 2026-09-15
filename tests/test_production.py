@@ -257,4 +257,81 @@ class HostPatchBundleTests(unittest.TestCase):
         self.assertIn('host_memory_api',joined)
         if 'Path(' in joined:self.assertIn('from pathlib import Path',joined,'the hunk must bind every name it uses')
 
+class HostEntryPointTests(unittest.TestCase):
+    """`hermes doctor` probes only <root>/venv and <root>/.venv for the command, so an agent installed
+    into a venv outside its clone reports a missing entry point and asks for a second installation."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec=importlib.util.spec_from_file_location('manage_hermes_host_patch',
+            Path(__file__).resolve().parents[1]/'scripts'/'manage_hermes_host_patch.py')
+        cls.module=importlib.util.module_from_spec(spec);spec.loader.exec_module(cls.module)
+
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)/'hermes-agent';self.root.mkdir()
+        self.venv=Path(self.tmp.name)/'venvs'/'hermes';(self.venv/'bin').mkdir(parents=True)
+        (self.venv/'bin'/'hermes').write_text('#!/bin/sh\n',encoding='utf-8')
+
+    def require_symlink(self):
+        # Windows without developer mode cannot create symlinks; the behaviour under test is POSIX-only.
+        probe=self.root/'probe'
+        try:
+            probe.symlink_to(self.venv,target_is_directory=True)
+        except OSError as exc:
+            self.skipTest('platform cannot create directory symlinks: %s'%exc)
+        probe.unlink()
+
+    def test_existing_entry_point_is_left_alone(self):
+        (self.root/'venv'/'bin').mkdir(parents=True)
+        shipped=self.root/'venv'/'bin'/'hermes';shipped.write_text('#!/bin/sh\n',encoding='utf-8')
+        result=self.module.ensure_entry_point(self.root,self.venv)
+        self.assertEqual(result['state'],'present')
+        self.assertEqual(Path(result['entry_point']),shipped)
+        self.assertFalse((self.root/'.venv').exists(),'an install.sh layout must not gain a competing link')
+
+    def test_links_an_external_venv_and_repeats_harmlessly(self):
+        self.require_symlink()
+        self.assertIsNone(self.module.find_entry_point(self.root),'doctor would warn about this layout')
+        created=self.module.ensure_entry_point(self.root,self.venv)
+        self.assertEqual(created['state'],'created')
+        self.assertEqual(Path(created['entry_point']),self.root/'.venv'/'bin'/'hermes',
+            'only .venv is gitignored by Hermes; linking to venv would dirty the patched tree')
+        again=self.module.ensure_entry_point(self.root,self.venv)
+        self.assertEqual(again['state'],'linked','a second run must report the link, never rewrite it')
+        self.assertEqual({k:v for k,v in again.items() if k!='state'},{k:v for k,v in created.items() if k!='state'},
+            'only the state may differ between runs')
+        self.assertTrue((self.root/'.venv'/'bin'/'hermes').is_file())
+
+    def test_refuses_a_bad_venv_even_when_an_entry_point_exists(self):
+        # A wrong --agent-venv must never be masked by an entry point that happens to be there; that
+        # is how a typo gets baked into a deployment.
+        (self.root/'venv'/'bin').mkdir(parents=True)
+        (self.root/'venv'/'bin'/'hermes').write_text('#!/bin/sh\n',encoding='utf-8')
+        (self.venv/'bin'/'hermes').unlink()
+        with self.assertRaises(SystemExit):
+            self.module.ensure_entry_point(self.root,self.venv)
+
+    def test_refuses_to_replace_anything(self):
+        self.require_symlink()
+        (self.root/'.venv').mkdir()
+        with self.assertRaises(SystemExit):
+            self.module.ensure_entry_point(self.root,self.venv)
+        (self.root/'.venv').rmdir()
+        other=Path(self.tmp.name)/'venvs'/'other';(other/'bin').mkdir(parents=True)
+        (other/'bin'/'hermes').write_text('#!/bin/sh\n',encoding='utf-8')
+        (self.root/'.venv').symlink_to(other,target_is_directory=True)
+        # The misplaced link does satisfy doctor, so refusing to move it is the only way the operator
+        # learns the venv they named is not the one in use.
+        with self.assertRaises(SystemExit):
+            self.module.ensure_entry_point(self.root,self.venv)
+        self.assertEqual(Path(self.root/'.venv').resolve(),other)
+
+    def test_refuses_a_venv_without_the_command(self):
+        (self.venv/'bin'/'hermes').unlink()
+        with self.assertRaises(SystemExit):
+            self.module.ensure_entry_point(self.root,self.venv)
+        self.assertFalse((self.root/'.venv').exists())
+
+
 if __name__=="__main__":unittest.main()

@@ -67,6 +67,20 @@ $ hermes -z "Search my personal memory for the access code of the hillside stora
   measured (`RSS 4.2 GB`, 117 threads, cold start ≫60 s). The installed unit adds
   `EnvironmentFile`, `ReadWritePaths=%h/.hindsight %h/.pg0 %h/.cache`, `TimeoutStartSec=900`,
   `TasksMax=1024`, `MemoryHigh=10G`/`MemoryMax=14G`. **Recommend folding these back into the template.**
+- The CLIs are exposed by `~/.local/bin` symlinks (`hermes`, `hermes-agent`, `hermes-acp`,
+  `personal-memory`) rather than by adding a venv `bin` to `PATH`. fish inserts `fish_user_paths`
+  entries *ahead of* `/usr/bin`, so `fish_add_path ~/.hermes/venvs/hermes/bin` silently repointed
+  `python3` at the venv's 3.11 (system is 3.14); it was reverted and the universal store verified
+  byte-identical to its pre-change backup. `personal-memory` links to the
+  `~/.local/share/hermes-memory/venv` copy deliberately: the Hermes venv also installs a
+  `personal-memory` script, but without the Hindsight dependencies.
+- `hermes doctor`'s `Command Installation` check (`hermes_cli/doctor_platform.py:441-447`) only probes
+  `PROJECT_ROOT/{venv,.venv}/bin/hermes`, i.e. the `install.sh` layout. Because this deployment keeps the
+  agent venv outside the tree, it warned `Venv entry point not found`. Fixed by a gitignored symlink
+  `~/hermes-agent/.venv -> ~/.hermes/venvs/hermes` (note `venv` is *not* ignored, only `.venv`), which also
+  makes the follow-on check pass: `~/.local/bin/hermes → correct target`. `git status --porcelain` stayed
+  at 30 entries, so the hash-pinned patch bundle is untouched. A `git clean -xdf` would drop the link;
+  `manage_hermes_host_patch.py link-entry-point --hermes-root … --agent-venv …` recreates it idempotently.
 
 ## 5. Defects found by this deployment and fixed
 

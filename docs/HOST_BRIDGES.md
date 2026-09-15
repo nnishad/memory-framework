@@ -16,6 +16,20 @@ python scripts/manage_hermes_host_patch.py check --hermes-root /path/to/hermes-a
 python scripts/manage_hermes_host_patch.py apply --hermes-root /path/to/hermes-agent
 ```
 
+`hermes doctor` finds the agent command only at `<root>/venv/bin/hermes` or `<root>/.venv/bin/hermes`,
+which is the layout the Hermes installer produces. If you keep the environment elsewhere, say
+`~/.hermes/venvs/hermes`, doctor warns `Venv entry point not found` and asks for a second install. Link
+the real venv in instead, from the same tool, before or after `apply`:
+
+```sh
+python scripts/manage_hermes_host_patch.py link-entry-point --hermes-root /path/to/hermes-agent \
+    --agent-venv /path/to/venvs/hermes
+```
+
+The step creates `<root>/.venv` and nothing else: `.venv` is what Hermes gitignores, so the patched tree
+stays exactly as pinned, while an existing `venv/` or `install.sh` layout is reported as `present` and left
+untouched. It never replaces a directory or re-points a link that targets another venv.
+
 Restart the memory service and Hermes. The installer verifies the release anchor and every touched file, checks the complete patch before applying, rejects local edits/mixed states, and verifies resulting hashes. Reapplying is a no-op. It does not fetch a release or force-overwrite another version. Review the release patch named by `host-patch/manifest.json` and its hash manifest before installation.
 
 Rollback with Hermes stopped:
