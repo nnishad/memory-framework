@@ -1,6 +1,7 @@
 """Production ASGI application. Serve with one Uvicorn worker on loopback."""
 import asyncio
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -52,6 +53,12 @@ class Application:
                         self.service=MemoryService(self.settings["data_dir"],self.settings["token"],
                             retrieval_config=self.settings.get("retrieval",{}),backend=self.settings.get("backend"),
                             principals=self.settings.get("principals",[]),extension_schemas=self.settings.get("extension_schemas",{}),intelligence_config=self.settings.get("intelligence",{}))
+                        # Prime the lazy retrieval models off the request path so the first Hermes
+                        # turn after a restart is fast instead of paying the ~7.7s cold-start. Run
+                        # in the background: readiness must not block on model/session warm-up.
+                        warm=getattr(self.service.retrieval,"warmup",None)
+                        if callable(warm):
+                            threading.Thread(target=warm,daemon=True,name="memory-warmup").start()
                         await send({"type":"lifespan.startup.complete"})
                     except Exception as error:
                         if self.hindsight_runtime:self.hindsight_runtime.close()

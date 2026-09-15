@@ -49,12 +49,25 @@ def resume(store):
                 db.execute("UPDATE memory_resets SET state='completed' WHERE epoch=?",(value,))
 
 
-def reset(store,scope):
+def reset(store,scope,backend=None):
     if scope!='canonical':raise ValueError('Reset requires explicit scope=canonical')
     token='reset_'+__import__('uuid').uuid4().hex
     with store.lock:
         store.deletions.append([token])
-        return _reset(store,token)
+        result=_reset(store,token)
+    # Cascade outside the store lock: clearing the external engine is network I/O and the local
+    # SQLite reset is already durable. A fresh start must leave no residual evidence in the
+    # managed Hindsight bank, so this runs synchronously and its outcome is reported to the caller.
+    result['external_engine']=_clear_external(backend)
+    return result
+
+
+def _clear_external(backend):
+    clear=getattr(backend,'clear_external',None)
+    if callable(clear):
+        try:return clear()
+        except Exception as error:return {'cleared':False,'error':type(error).__name__}
+    return {'cleared':False,'reason':'no external engine bound'}
 
 
 def _reset(store,token):

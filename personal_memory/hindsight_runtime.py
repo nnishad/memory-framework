@@ -2,7 +2,11 @@
 import hashlib
 import os
 import re
+import shutil
 from pathlib import Path
+
+
+PROFILE_PREFIX = "hermes-personal-memory-"
 
 
 def default_config(data_dir):
@@ -101,3 +105,61 @@ class Runtime:
 
     def __enter__(self):return self.start()
     def __exit__(self,*_):self.close()
+
+
+def _instance_roots(home=None):
+    """Filesystem roots the managed backend uses for embedded instances and profiles."""
+    home=Path(home or os.environ.get("HINDSIGHT_HOME", Path.home()/".hindsight")).expanduser()
+    pg0=Path(os.environ.get("PG0_HOME", Path.home()/".pg0")).expanduser()
+    return pg0/"instances", home/"profiles"
+
+
+def stale_instances(data_dir, home=None):
+    """Framework-owned Hindsight instances/profiles on disk that do not match the active profile.
+
+    The profile identity is derived from ``data_dir``, so a data_dir change (or an older
+    deployment) leaves an orphaned embedded Postgres instance under ``~/.pg0/instances`` and
+    profile files under ``~/.hindsight/profiles`` that are never garbage-collected - a disk leak
+    that can also retain stale memory data from a previous era. Only entries carrying the
+    framework's own ``hermes-personal-memory-`` prefix are considered, and the active profile is
+    always excluded, so unrelated Hindsight data is never touched.
+    """
+    active=default_config(data_dir)["profile"]
+    instances_dir, profiles_dir=_instance_roots(home)
+    stale, stems = [], set()
+    if instances_dir.is_dir():
+        for path in sorted(instances_dir.iterdir()):
+            name=path.name
+            if name.startswith("hindsight-embed-"+PROFILE_PREFIX) and name!="hindsight-embed-"+active:
+                stale.append(path); stems.add(name[len("hindsight-embed-"):])
+    if profiles_dir.is_dir():
+        # A stale profile leaves sibling control files (.env/.lock/.log); reclaim them with the
+        # instance so the profile directory does not accumulate dangling files.
+        for path in sorted(profiles_dir.iterdir()):
+            stem=path.name.split(".")[0]
+            if stem.startswith(PROFILE_PREFIX) and stem!=active:
+                stems.add(stem); stale.append(path)
+    return {"active_profile":active,"stale":[str(p) for p in stale],"stale_profiles":sorted(stems)}
+
+
+def prune_stale_instances(data_dir, home=None, apply=False):
+    """Report (and with ``apply=True`` remove) stale framework-owned Hindsight instances.
+
+    Dry-run by default so an operator can inspect exactly what would be reclaimed before any
+    deletion. Removal is scoped to the framework's own profile prefix and never touches the
+    active instance; it should run while the service is stopped so no daemon holds the files.
+    """
+    found=stale_instances(data_dir, home)
+    removed, errors, reclaimed = [], [], 0
+    if apply:
+        for raw in found["stale"]:
+            path=Path(raw)
+            try:
+                size=sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) if path.is_dir() else path.stat().st_size
+                if path.is_dir(): shutil.rmtree(path)
+                else: path.unlink()
+                removed.append(raw); reclaimed+=size
+            except Exception as error:
+                errors.append({"path":raw,"error":type(error).__name__})
+    return {"active_profile":found["active_profile"],"stale":found["stale"],"stale_profiles":found["stale_profiles"],
+            "applied":apply,"removed":removed,"reclaimed_bytes":reclaimed,"errors":errors}

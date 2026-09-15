@@ -102,7 +102,7 @@ class MemoryService:
         from . import curated
         reset.initialize(self.store)
         self.workflows.start()
-        self.routes["/v1/reset"]=lambda a:reset.reset(self.store,**a)
+        self.routes["/v1/reset"]=lambda a:reset.reset(self.store,backend=self.retrieval,**a)
         self.routes["/v1/epoch"]=lambda a:{"epoch":reset.epoch(self.store)}
         self.routes["/v1/curated/read"]=lambda a:curated.read(self.store,**a)
         self.routes["/v1/curated/apply"]=None

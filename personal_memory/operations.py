@@ -8,6 +8,20 @@ from .client import Client
 from .recovery import inspect_database
 
 
+# Embedding/ML stack exercised by this release. A major-version jump here can silently change
+# embeddings (a pooling change, or an API rename such as sentence-transformers'
+# get_sentence_embedding_dimension -> get_embedding_dimension that Hindsight 0.9.2 still calls)
+# and invalidate recall without any error at ingest time. doctor therefore surfaces major-version
+# drift instead of letting it pass unnoticed. Only the public major is compared, so a host-specific
+# torch CUDA build (cu128 on Blackwell, cu130 on Ampere) or a patch upgrade does not false-fail.
+TESTED_EMBEDDING_STACK={"sentence-transformers":"6.0.1","numpy":"2.4.6","onnxruntime":"1.30.0","torch":"2.14.0"}
+
+
+def _major(version):
+    try:return int(str(version).split("+",1)[0].split(".",1)[0])
+    except Exception:return None
+
+
 def doctor(home,offline=False):
     home=Path(home).expanduser();path=home/"personal-memory/settings.json"
     from .configuration import load_settings
@@ -36,6 +50,15 @@ def doctor(home,offline=False):
     add("native_backup_path",data.is_relative_to(home.resolve()) or data.is_relative_to(Path.home().resolve()),"Native Hermes backup skips external paths outside the OS home; encrypted framework backups support the configured data directory")
     for module in ("uvicorn","cryptography","hindsight_api","hindsight_embed"):
         add("dependency_"+module,importlib.util.find_spec(module) is not None,"Required production dependency")
+    import importlib.metadata
+    drift=[]
+    for package,tested in TESTED_EMBEDDING_STACK.items():
+        try:installed=importlib.metadata.version(package)
+        except Exception:continue  # optional on this path (e.g. a CPU-only build without torch)
+        if _major(installed)!=_major(tested):drift.append(f"{package} {installed} (tested {tested})")
+    add("embedding_stack",not drift,
+        "Installed embedding/ML stack is within the tested major versions" if not drift
+        else "Major-version drift can silently change embeddings and break recall; re-pin or re-test: "+", ".join(drift))
     database=Path(cfg["data_dir"])/"memory.db"
     try:
         inspect_database(database);add("database_integrity",True,"SQLite integrity and foreign keys passed")

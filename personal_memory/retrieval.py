@@ -129,6 +129,43 @@ class Hybrid:
         for thread in self.threads:
             thread.join(timeout=max(0,deadline-time.monotonic()))
 
+    def warmup(self):
+        """Prime the lazily-loaded retrieval models so the first real query is fast.
+
+        The embedder (ONNX session), the cross-encoder re-ranker and the external Hindsight
+        recall each pay a one-time model/session load on first use - seconds on a GPU - which
+        otherwise lands on the first Hermes turn after a restart (observed ~7.7s). Running them
+        once at startup, off the request path, moves that cost out of the first user query. This
+        is strictly best-effort: it never raises and never writes to ``self.errors`` (which feeds
+        readiness), so a warmup failure just means the first query warms the cache instead.
+        """
+        probe = "warmup"
+        if self.semantic is not None:
+            try:
+                self.semantic.embedder.query(probe)
+            except Exception:
+                pass
+        if self.hindsight is not None:
+            try:
+                self.hindsight.candidates(probe, "fast")
+            except Exception:
+                pass
+        if self._rerank_enabled:
+            try:
+                self._ensure_reranker()
+            except Exception:
+                pass
+        return {"semantic": self.semantic is not None, "hindsight": self.hindsight is not None,
+                "rerank_loaded": self.reranker is not None}
+
+    def clear_external(self):
+        """Cascade a canonical reset to the external retrieval engine so a fresh start leaves no
+        residual evidence in the managed Hindsight bank (memories, entities and retained
+        documents). No-op when no external engine is bound."""
+        if self.hindsight is not None and callable(getattr(self.hindsight, "clear_bank", None)):
+            return self.hindsight.clear_bank()
+        return {"cleared": False, "reason": "no external engine bound"}
+
     def status(self):
         result = self.store.status()
         result.update(backend="hybrid_rrf", semantic_embeddings=self.semantic is not None,

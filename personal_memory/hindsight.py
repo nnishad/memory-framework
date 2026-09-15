@@ -76,6 +76,26 @@ class Hindsight:
         self.last_error = errors[0]+": retain pending" if errors else None
         return len(rows)+len(deleted)
 
+    def clear_bank(self):
+        """Erase every memory unit, entity and document in the managed bank, then reset the
+        local retain journal. A canonical reset calls this so a fresh start leaves no residual
+        evidence in the external engine - including documents retained before the local store
+        was rebuilt, which the per-record delete cascade can no longer see. The bank profile is
+        preserved (Hindsight delete_bank_profile=False) so disposition/config survive. The local
+        SQLite store stays authoritative: a failed bulk clear is recorded, never raised, so the
+        reset still completes and local recall is already redacted.
+        """
+        try:
+            self.write_client.call(self.path + "/memories", method="DELETE", missing_ok=True)
+            with self.store.connect() as db:
+                db.execute("DELETE FROM hindsight_done WHERE backend=?", (self.key,))
+                db.execute("DELETE FROM hindsight_pending WHERE backend=?", (self.key,))
+            self.last_error = None
+            return {"cleared": True, "backend": self.key}
+        except Exception as error:
+            self.last_error = type(error).__name__ + ": bank clear pending"
+            return {"cleared": False, "backend": self.key, "error": self.last_error}
+
     def candidates(self, query, depth, source=None):
         args = {"query":query,"types":["world","experience"],"budget":{"fast":"low","balanced":"mid","deep":"high"}[depth],
                 "max_tokens":{"fast":2048,"balanced":4096,"deep":8192}[depth],"query_timestamp":now()}

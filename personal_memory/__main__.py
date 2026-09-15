@@ -15,7 +15,7 @@ def settings(home):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Personal Memory service and Hermes setup")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("setup", "serve", "status", "import-jsonl", "import-whatsapp", "import-email", "import-health", "forget", "coverage", "rollback", "doctor", "backup-keygen", "backup", "restore", "request", "sync-hermes-history", "sync-hermes-files", "export-native-skill", "attach"):
+    for name in ("setup", "serve", "status", "import-jsonl", "import-whatsapp", "import-email", "import-health", "forget", "coverage", "rollback", "doctor", "backup-keygen", "backup", "restore", "request", "sync-hermes-history", "sync-hermes-files", "export-native-skill", "attach", "reset", "prune-hindsight"):
         p = sub.add_parser(name)
         p.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
         if name == "setup":
@@ -57,6 +57,11 @@ def main(argv=None):
                 p.add_argument("--fold", type=int, choices=[0,1],default=0)
         elif name == "doctor":
             p.add_argument("--offline",action="store_true")
+        elif name == "reset":
+            p.add_argument("--scope",default="canonical",choices=["canonical"])
+            p.add_argument("--confirm",action="store_true",help="Required: a canonical reset redacts all memory and clears the external engine")
+        elif name == "prune-hindsight":
+            p.add_argument("--apply",action="store_true",help="Remove stale instances; default is a dry-run report")
         elif name == "backup-keygen":
             p.add_argument("file",type=Path)
         elif name in {"backup","restore"}:
@@ -134,6 +139,14 @@ def main(argv=None):
     elif args.command=="restore":
         from .recovery import restore
         result=restore(args.archive,args.key_file,args.destination,args.deletion_ledger)
+    elif args.command=="reset":
+        if not args.confirm:raise ValueError("A canonical reset redacts all memory and clears the external engine; re-run with --confirm")
+        cfg=settings(args.hermes_home)
+        result=Client(cfg['url'],cfg['token'],timeout=120).call('/v1/reset',{'scope':args.scope})
+    elif args.command=="prune-hindsight":
+        from .hindsight_runtime import prune_stale_instances
+        cfg=settings(args.hermes_home)
+        result=prune_stale_instances(cfg['data_dir'],apply=args.apply)
     elif args.command == "serve":
         from .server import create_server
         cfg = settings(args.hermes_home)
