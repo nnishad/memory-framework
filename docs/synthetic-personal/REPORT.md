@@ -78,4 +78,4 @@ Run from the project root:
 python scripts/evaluate_synthetic_personal.py --model-path /absolute/path/to/minilm --output-dir docs/synthetic-personal
 ```
 
-Omit `--model-path` for lexical and lifecycle tests without embedding dependencies. Install the project semantic optional dependencies to use the model. The archive and questions are generated deterministically; isolated temporary databases are removed after each run.
+Omit `--model-path` for lexical and lifecycle-only benchmark runs. FastEmbed is a core runtime dependency; `--model-path` selects the local model used by this benchmark semantic channel. The archive and questions are generated deterministically; isolated temporary databases are removed after each run.

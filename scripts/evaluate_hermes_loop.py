@@ -87,9 +87,9 @@ def make_item(source, source_id, text, occurred_at=None):
 
 
 # ---------------------------------------------------------------------------
-# Seven scenario classes (paraphrase, cross-session, correction, contradiction,
-# compression, interrupted, unknown/abstention). Each carries its own gold so
-# scoring is deterministic; the *answer* is produced by the real host model.
+# Seven answer-quality classes. Direct ingestion deliberately isolates retrieval and response
+# quality; provider lifecycle hooks (session switching, compression and interrupted turns) are
+# exercised by verify_correctness_fixes.py and unit tests, not inferred from these one-shot cases.
 # ---------------------------------------------------------------------------
 SCENARIOS = [
     {
@@ -104,7 +104,7 @@ SCENARIOS = [
     },
     {
         "id": "cross-session-cabin",
-        "class": "cross-session",
+        "class": "multi-source",
         "seed": [
             make_item("cabin-chat", "cabin-wifi", "The WiFi password at my parents' lake cabin is Larchwood-42."),
             make_item("trip-planner", "cabin-trip", "I am going up to the lake cabin again next month."),
@@ -153,12 +153,11 @@ SCENARIOS = [
     },
     {
         "id": "compression-vault",
-        "class": "compression",
+        "class": "distractor-pressure",
         "seed": (
             [make_item("eval", "vault-target", "The combination to my attic vault is amber-crystal-7.")]
             + [
-                # 18 plausible but irrelevant decoys. Under host-side context
-                # compression these crowd the transcript; the target must still surface.
+                # 18 plausible but irrelevant decoys exercise retrieval precision under pressure.
                 make_item("eval", f"vault-decoy-{i}",
                           f"Unrelated fact number {i}: a shelf in the storage unit holds jarred pears and {i} ball bearings.")
                 for i in range(18)
@@ -172,7 +171,7 @@ SCENARIOS = [
     },
     {
         "id": "interrupted-reservation",
-        "class": "interrupted",
+        "class": "incomplete-event",
         "seed": [
             make_item("eval", "luigis", "I booked a table at Luigi's for May 3rd, but I did not confirm whether it is lunch or dinner."),
         ],
@@ -233,10 +232,9 @@ def seed(client, items):
 def reset_store(reset_client):
     # /v1/reset wipes the canonical store + clears the external engine. Cheap
     # enough between scenarios that topic bleed never confounds a later case.
-    try:
-        reset_client.call("/v1/reset", {"scope": "canonical"})
-    except Exception as error:
-        print(f"reset failed: {type(error).__name__}: {error}", file=sys.stderr)
+    result=reset_client.call("/v1/reset", {"scope": "canonical"})
+    if not isinstance(result,dict) or "epoch" not in result:
+        raise RuntimeError("canonical reset did not return a new memory epoch")
 
 
 def run_hermes_turn(hermes_bin, home, query, usage_path, timeout):
@@ -264,6 +262,22 @@ def read_usage(path):
         return json.loads(Path(path).read_text())
     except Exception:
         return {}
+
+
+def wait_for_ready(client, proc, timeout, context):
+    deadline=time.monotonic()+timeout
+    last=None
+    while time.monotonic()<deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"service died during {context}")
+        try:
+            last=client.call("/v1/ready")
+            if isinstance(last,dict) and last.get("ready"):
+                return last
+        except Exception as error:
+            last={"error":f"{type(error).__name__}: {error}"}
+        time.sleep(2)
+    raise RuntimeError(f"service not ready during {context}: {last}")
 
 
 def score(scenario, answer, usage, rc, latency):
@@ -304,6 +318,11 @@ def score(scenario, answer, usage, rc, latency):
                 result["detail"] += f" recency=UNQUALIFIED ({superseded} present without any qualifier)"
             else:
                 result["detail"] += f" recency=ok (mentioned={mentioned} qualified={qualified})"
+    process_ok = rc == 0 and usage.get("completed") is True
+    result["process_ok"] = process_ok
+    result["correct"] = bool(result["correct"] and process_ok)
+    if not process_ok:
+        result["detail"] += f" process_ok=False(rc={rc},completed={usage.get('completed')!r})"
     return result
 
 
@@ -330,8 +349,8 @@ def main():
 
     install(home, port=port, exclusive=True)
 
-    # Turn on the default-off semantic lever for the ephemeral profile + calibrate
-    # the relevance floor to the pinned MiniLM's operating point (shipped default
+    # Semantic retrieval is default-on. Make that dependency explicit in the ephemeral profile
+    # and calibrate the relevance floor to the pinned MiniLM's operating point (shipped default
     # 0.5 suppresses the paraphrase case; see Step 2 finding).
     for name in ("settings.json", "config.json"):
         path = home / "personal-memory" / name
@@ -352,18 +371,7 @@ def main():
     settings = json.loads((home / "personal-memory" / "settings.json").read_text())
     client = Client(settings["url"], settings["token"], timeout=30)
     reset_client = Client(settings["url"], settings["token"], timeout=180)
-    ready_deadline = time.monotonic() + 240
-    ready = False
-    while time.monotonic() < ready_deadline and not ready:
-        if proc.poll() is not None:
-            raise RuntimeError("service died during startup; see " + str(svc_log))
-        try:
-            r = client.call("/v1/ready")
-            ready = bool(r.get("ready")) if isinstance(r, dict) else False
-        except Exception:
-            time.sleep(2)
-    if not ready:
-        raise RuntimeError("service not ready in time")
+    wait_for_ready(client,proc,240,"startup; see "+str(svc_log))
 
     results = []
     try:
@@ -372,10 +380,12 @@ def main():
             seed_ids = seed(client, sc["seed"])
             # Warm the lazy semantic index inside the service so a per-scenario
             # first-turn build cost is not attributed to the model's wall clock.
-            try:
-                client.call("/v1/search", {"query": sc["query"], "depth": "balanced", "limit": 4})
-            except Exception:
-                pass
+            client.call("/v1/search", {"query": sc["query"], "depth": "balanced", "limit": 4})
+            wait_for_ready(client,proc,120,f"indexing scenario {sc['id']}")
+            warmed=client.call("/v1/search", {"query": sc["query"], "depth": "balanced", "limit": 4})
+            semantic=(warmed.get("diagnostics") or {}).get("semantic") or {}
+            if semantic.get("enabled") and not semantic.get("ready"):
+                raise RuntimeError(f"semantic index was not ready for scenario {sc['id']}: {semantic}")
             usage_path = tmp_root / f"usage-{sc['id']}.json"
             answer, rc, latency = run_hermes_turn(args.hermes_bin, home, sc["query"], usage_path, args.turn_timeout_sec)
             usage = read_usage(usage_path)
@@ -413,7 +423,7 @@ def main():
         "total_api_calls": sum(r.get("api_calls") or 0 for r in results),
         "mean_latency_sec": round(sum(r["latency_sec"] for r in results) / max(1, len(results)), 2),
         "abstention_correct": sum(1 for r in results if r["class"] == "abstention" and r["correct"]),
-        "hallucinations": sum(1 for r in results if r.get("hallucinated")),
+        "abstention_forbidden_pattern_hits": sum(1 for r in results if r.get("hallucinated")),
     }
     report = {
         "hermes_tag": "v2026.9.14", "hermes_commit": commit,
@@ -423,7 +433,8 @@ def main():
         "scope": ("Real `hermes -z` oneshot turns against the ephemeral Hermes profile + "
                   "deployed personal-memory provider + host llama.cpp model. Store seeded via "
                   "direct /v1/ingest; canonical reset between scenarios. Production store "
-                  "and archive untouched."),
+                  "and archive untouched. These cases measure retrieval/answer quality; they do "
+                  "not execute session-switch, compression, or interrupted-turn lifecycle hooks."),
         "relevance_floor_used": 0.35,
         "relevance_floor_shipped_default": 0.5,
         "calibration_finding": ("Step 2 measured MiniLM multilingual similarity 0.4894 on a "
@@ -433,6 +444,7 @@ def main():
                                  "the shipped default as an open calibration question."),
         "real_manager_loop_tested": True,
         "live_llm_tested": True,
+        "provider_lifecycle_tested_by_this_harness": False,
     }
     Path(args.output).write_text(json.dumps(report, indent=2) + "\n")
     md = [
@@ -444,7 +456,7 @@ def main():
         f"- total scenarios: {aggregate['total']}  | passed: {aggregate['passed']}  | failed: {aggregate['failed']}",
         f"- aggregate tokens: {aggregate['total_input_tokens']} in / {aggregate['total_output_tokens']} out over {aggregate['total_api_calls']} api calls",
         f"- mean turn latency: {aggregate['mean_latency_sec']}s",
-        f"- abstention correct: {aggregate['abstention_correct']} / hallucinations: {aggregate['hallucinations']}",
+        f"- abstention correct: {aggregate['abstention_correct']} / forbidden-pattern hits in abstention case: {aggregate['abstention_forbidden_pattern_hits']}",
         "",
         "## Per-scenario",
         "",

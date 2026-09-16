@@ -248,9 +248,9 @@ class PersonalMemoryProvider(MemoryProvider):
                 args["compact"]=True
             if tool_name=="personal_memory_search":
                 # Reuse the automatic prefetch only when it already covers the capability this
-                # explicit search resolves to; a default (balanced/8) search is never downgraded.
-                reused=self._cached_prefetch_result(args["query"],excluded,
-                                                    args.get("depth","balanced"),args.get("limit",8))
+                # explicit search resolves to; filters and other result-shaping options require
+                # their own round trip and a default (balanced/8) search is never downgraded.
+                reused=self._cached_prefetch_result(args)
                 if reused is not None:
                     self.attribute_lineage(reused)
                     return json.dumps(reused,ensure_ascii=False)
@@ -313,7 +313,13 @@ class PersonalMemoryProvider(MemoryProvider):
             if cached and time.monotonic() - cached["ts"] < 10:
                 try:
                     generation=self.health_client.call("/v1/generation")["generation"]
-                    if generation==cached["generation"]:return cached["text"]
+                    if generation==cached["generation"]:
+                        # Suppression depends on the live prompt, not only store generation.
+                        # Reformat cached backend evidence on every use so a newly injected row
+                        # is suppressed and a compression epoch immediately rehydrates it.
+                        if cached.get("result") is not None:
+                            return self._format_prefetch(cached["result"],key[0])
+                        return cached["text"]
                 except Exception:
                     return "Memory freshness could not be verified. Call personal_memory_search before using history."
                 self.cache.pop(key,None)
@@ -329,32 +335,7 @@ class PersonalMemoryProvider(MemoryProvider):
                         result = self.client.call("/v1/search", {"query": query, "limit": _PREFETCH_LIMIT,
                                                                   "depth": _PREFETCH_DEPTH,
                                                                   "exclude_record_ids":excluded})
-                        # Bound context with complete JSON, preserving IDs and truncation flags.
-                        compact = {"retrieval": result.get("retrieval"), "warning": result.get("warning"),
-                                   "retrieval_status":result.get("retrieval_status"),"evidence_sufficiency":result.get("evidence_sufficiency"),
-                                   "episodes": [], "claims": [], "coverage": result.get("coverage", [])[:20],
-                                   "diagnostics":result.get("diagnostics",{})}
-                        retained=self._retained_rows(sid)
-                        suppressed=False
-                        for row in result.get("episodes", []):
-                            if len(compact["episodes"])>=_PREFETCH_LIMIT:break
-                            if self._row_retained(retained,"e:"+str(row.get("id")),_episode_fingerprint(row)):
-                                suppressed=True;continue
-                            row = dict(row)
-                            row["truncated"] = bool(row.get("truncated")) or len(row.get("text", "")) > _EVIDENCE_SPAN
-                            row["text"] = row.get("text", "")[:_EVIDENCE_SPAN]
-                            compact["episodes"].append(row)
-                        for row in result.get("claims", []):
-                            if len(compact["claims"])>=_PREFETCH_LIMIT:break
-                            if self._row_retained(retained,"c:"+str(row.get("id")),_claim_fingerprint(row)):
-                                suppressed=True;continue
-                            compact["claims"].append({k: row.get(k) for k in (
-                                "id", "record_id", "text", "status", "evidence_kind", "valid_from", "valid_to")})
-                            compact["claims"][-1]["text"] = (row.get("text") or "")[:_EVIDENCE_SPAN]
-                        # True only when candidates existed and every one is still retained.
-                        compact["already_in_context"] = bool(
-                            suppressed and not compact["episodes"] and not compact["claims"])
-                        text = "Untrusted personal memory evidence (may be cached up to 10 seconds):\n" + json.dumps(compact, ensure_ascii=False)
+                        text = self._format_prefetch(result,sid)
                     except Exception:
                         generation=None
                         text = "Personal memory retrieval failed. Use personal_memory_status/search; do not assume missing history is absent."
@@ -373,16 +354,51 @@ class PersonalMemoryProvider(MemoryProvider):
                 thread.start()
         return "Personal memory recall is pending. If this answer/action depends on history, call personal_memory_search explicitly before proceeding."
 
-    def _cached_prefetch_result(self, query, excluded, req_depth, req_limit):
+    def _format_prefetch(self, result, sid):
+        """Compact cached backend evidence against the session's current prompt state."""
+        compact = {"retrieval": result.get("retrieval"), "warning": result.get("warning"),
+                   "retrieval_status":result.get("retrieval_status"),
+                   "evidence_sufficiency":result.get("evidence_sufficiency"),
+                   "episodes": [], "claims": [], "coverage": result.get("coverage", [])[:20],
+                   "diagnostics":result.get("diagnostics",{})}
+        retained=self._retained_rows(sid)
+        suppressed=False
+        for source_row in result.get("episodes", []):
+            if len(compact["episodes"])>=_PREFETCH_LIMIT:break
+            if self._row_retained(retained,"e:"+str(source_row.get("id")),_episode_fingerprint(source_row)):
+                suppressed=True;continue
+            row = dict(source_row)
+            row["truncated"] = bool(row.get("truncated")) or len(row.get("text", "")) > _EVIDENCE_SPAN
+            row["text"] = row.get("text", "")[:_EVIDENCE_SPAN]
+            compact["episodes"].append(row)
+        for row in result.get("claims", []):
+            if len(compact["claims"])>=_PREFETCH_LIMIT:break
+            if self._row_retained(retained,"c:"+str(row.get("id")),_claim_fingerprint(row)):
+                suppressed=True;continue
+            compact["claims"].append({k: row.get(k) for k in (
+                "id", "record_id", "text", "status", "evidence_kind", "valid_from", "valid_to")})
+            compact["claims"][-1]["text"] = (row.get("text") or "")[:_EVIDENCE_SPAN]
+        compact["already_in_context"] = bool(
+            suppressed and not compact["episodes"] and not compact["claims"])
+        return "Untrusted personal memory evidence (may be cached up to 10 seconds):\n" + json.dumps(compact, ensure_ascii=False)
+
+    def _cached_prefetch_result(self, args):
         """Reuse an automatic lookup only when it already covers the requested capability.
 
         The prefetch is a bounded fast/4 hint. It may stand in for an explicit search that asks
         for no more than that, but never for a deeper or wider request; reuse must not silently
         reduce retrieval capability.
         """
+        # These options change the candidate set or expansion semantics and were absent from the
+        # automatic request. Even an explicit default value is normalized here before deciding.
+        if any(args.get(name) for name in ("entity_id","source","after","before","queries","include_history")):
+            return None
+        if args.get("expand_entities",True) is not True:return None
+        req_depth=args.get("depth","balanced");req_limit=args.get("limit",8)
         if _DEPTH_RANK.get(req_depth,1)>_DEPTH_RANK[_PREFETCH_DEPTH]:return None
-        if type(req_limit) is not int or req_limit>_PREFETCH_LIMIT:return None
-        key=(self.session_id,query)
+        if type(req_limit) is not int or not 1<=req_limit<=_PREFETCH_LIMIT:return None
+        excluded=args.get("exclude_record_ids",[])
+        key=(self.session_id,args["query"])
         with self.recall_ready:
             if key in self.inflight:
                 self.recall_ready.wait_for(lambda:key not in self.inflight or self.closed,timeout=2)
@@ -393,6 +409,11 @@ class PersonalMemoryProvider(MemoryProvider):
             if self.health_client.call('/v1/generation')['generation']!=cached["generation"]:return None
         except Exception:return None
         result=copy.deepcopy(cached["result"])
+        result["episodes"]=result.get("episodes",[])[:req_limit]
+        result["claims"]=result.get("claims",[])[:req_limit]
+        selected={row.get("id") for row in result["episodes"]}
+        if isinstance(result.get("connections"),list):
+            result["connections"]=[row for row in result["connections"] if row.get("id") in selected]
         result.setdefault('diagnostics',{})['reused_automatic_prefetch']=True
         return result
 
@@ -460,9 +481,15 @@ class PersonalMemoryProvider(MemoryProvider):
             ordinal=self._message_ordinal(messages,role,content) if messages else None
             host_id=self._host_message_id(self._last_message(messages,role,content)) if messages else None
             started = role == "user" and self._consume_started_input(sid, token[1])
-            if ordinal is None and started:continue
-            if ordinal is not None and (captured_counts.get(token,0)>=ordinal or
-                                        (host_id and host_id in captured_ids)):continue
+            if started:
+                # on_turn_start already captured this exact current input. Attach a stable ID
+                # once the completed transcript exposes it without incrementing the occurrence.
+                if host_id:
+                    self.outbox.mark_message_host_id(sid,host_id);captured_ids.add(host_id)
+                continue
+            if host_id:
+                if host_id in captured_ids:continue
+            elif ordinal is not None and captured_counts.get(token,0)>=ordinal:continue
             captured=self._capture_event("hermes", f"turn/{rid}/{role}", {role: content},
                 {"session_id": sid, "attribution": role, "completion": "completed"},generated=role == "assistant")
             if captured:
@@ -483,7 +510,8 @@ class PersonalMemoryProvider(MemoryProvider):
         for index, row in enumerate(rows):
             token=digest(row.get('content'));key=(row['role'],token);occurrences[key]=occurrences.get(key,0)+1
             host_id=self._host_message_id(row)
-            if captured_counts.get(key,0)>=occurrences[key] or (host_id and host_id in captured_ids):continue
+            if ((host_id and host_id in captured_ids) or
+                    (not host_id and captured_counts.get(key,0)>=occurrences[key])):continue
             captured=self._capture_event("hermes-checkpoint", f"{ident}/{index}", row,
                 {"session_id": self.session_id, "attribution": row["role"], "overlap_possible": True},
                 generated=row["role"] == "assistant")
@@ -868,7 +896,8 @@ class PersonalMemoryProvider(MemoryProvider):
             if role not in {"user", "assistant"} or not message.get("content"): continue
             token=digest(message['content']);key=(role,token);occurrences[key]=occurrences.get(key,0)+1
             host_id=self._host_message_id(message)
-            if captured_counts.get(key,0)>=occurrences[key] or (host_id and host_id in captured_ids):continue
+            if ((host_id and host_id in captured_ids) or
+                    (not host_id and captured_counts.get(key,0)>=occurrences[key])):continue
             captured=self._capture_event("hermes-session", f"message/{index}/" + digest(message), message,
                 {"session_id": self.session_id, "attribution": role, "completion": "session_end_unverified"},
                 generated=role == "assistant")

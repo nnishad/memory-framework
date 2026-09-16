@@ -310,7 +310,7 @@ class UpstreamContractTests(HTTPFixture):
         while time.monotonic()<deadline and "Untrusted personal" not in result:
             time.sleep(.02);result=provider.prefetch('PostgreSQL')
         self.assertIn("PostgreSQL",result)
-        provider._invalidate()
+        # A cached backend result is reformatted against the now-retained prompt state.
         result=provider.prefetch('PostgreSQL')
         deadline=time.monotonic()+3
         while time.monotonic()<deadline and result:
@@ -328,16 +328,15 @@ class UpstreamContractTests(HTTPFixture):
         while time.monotonic()<deadline and "Untrusted personal" not in result:
             time.sleep(.02);result=provider.prefetch('PostgreSQL')
         self.assertIn("PostgreSQL",result)  # first recall injects the evidence
-        provider._invalidate()
+        # The backend response remains cached, but formatting is recomputed from live exposure.
         result=provider.prefetch('PostgreSQL')
         deadline=time.monotonic()+wait
         while time.monotonic()<deadline and result:
             time.sleep(.02);result=provider.prefetch('PostgreSQL')
         self.assertEqual(result,"")  # still in context => suppressed, no empty envelope appended
         # Compression evicts the injected evidence from the live transcript; the epoch bump forces
-        # the next automatic recall to rehydrate it instead of suppressing it forever.
+        # the same cached backend result to rehydrate immediately, without manual invalidation.
         provider.on_pre_compress([{"role":"user","content":"recall PostgreSQL"}],require_checkpoint=True)
-        provider._invalidate()
         result=provider.prefetch('PostgreSQL')
         deadline=time.monotonic()+wait
         while time.monotonic()<deadline and "Untrusted personal" not in result:
@@ -403,6 +402,34 @@ class UpstreamContractTests(HTTPFixture):
         self.assertTrue(result['diagnostics']['reused_automatic_prefetch'])
         self.assertEqual(calls,1)
 
+    def test_prefetch_reuse_honours_limit_and_rejects_filtered_searches(self):
+        self.client.call('/v1/ingest',{'items':[
+            adapt_existing(record('one',text='shared-token first'),connector_id='tests.fixture',
+                           connector_version='1.0',source_locator='fixture://one',observed_at='2024-03-01T09:00:00Z'),
+            adapt_existing(record('two',text='shared-token second',source='email'),connector_id='tests.fixture',
+                           connector_version='1.0',source_locator='fixture://two',observed_at='2024-03-01T09:00:00Z')]})
+        provider=self.provider();calls=0;real=provider.client.call
+        def counted(path,*args,**kwargs):
+            nonlocal calls
+            if path=='/v1/search':calls+=1
+            return real(path,*args,**kwargs)
+        provider.client.call=counted
+        provider.prefetch('shared-token')
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline:
+            with provider.lock:
+                if ('session-a','shared-token') not in provider.inflight:break
+            time.sleep(.02)
+        limited=json.loads(provider.handle_tool_call('personal_memory_search',
+                           {'query':'shared-token','depth':'fast','limit':1}))
+        self.assertEqual(len(limited['episodes']),1)
+        self.assertTrue(limited['diagnostics']['reused_automatic_prefetch'])
+        filtered=json.loads(provider.handle_tool_call('personal_memory_search',
+                            {'query':'shared-token','depth':'fast','limit':4,'source':'email'}))
+        self.assertEqual({row['source'] for row in filtered['episodes']},{'email'})
+        self.assertNotIn('reused_automatic_prefetch',filtered['diagnostics'])
+        self.assertEqual(calls,2)
+
     def test_host_message_ids_dedup_across_lifecycle_hooks(self):
         provider=self.provider()
         msgs=[{"role":"user","content":"canary","id":"u1"},
@@ -431,6 +458,31 @@ class UpstreamContractTests(HTTPFixture):
         ping=self.client.call('/v1/search',{"query":"ping"})["episodes"]
         self.assertEqual(len(ping),1)  # "ping" captured exactly once despite the counter under-count
         self.assertIn("id:p2",provider.outbox.captured_host_ids("session-a"))
+
+    def test_stable_ids_backfill_earlier_identical_message_without_counter_loss(self):
+        provider=self.provider()
+        rows=[{"role":"user","content":"ping","id":"p1"},
+              {"role":"user","content":"ping","id":"p2"}]
+        # Completed-turn capture sees only the current (last) occurrence.
+        provider.sync_turn("ping","",messages=rows)
+        # Checkpoint recovery must use stable IDs as the authority and recover p1 even though the
+        # shared content counter is already one.
+        provider.on_pre_compress(rows,require_checkpoint=True)
+        provider.outbox.flush()
+        ping=self.client.call('/v1/search',{"query":"ping"})["episodes"]
+        self.assertEqual(len(ping),2)
+        self.assertEqual(provider.outbox.captured_host_ids("session-a"),{"id:p1","id:p2"})
+
+    def test_turn_start_capture_attaches_later_host_id_without_duplicate(self):
+        provider=self.provider()
+        provider.on_turn_start(1,"same input")
+        rows=[{"role":"user","content":"same input","id":"u1"},
+              {"role":"assistant","content":"answer","id":"a1"}]
+        provider.sync_turn("same input","answer",messages=rows)
+        provider.on_session_end(rows)
+        provider.outbox.flush()
+        self.assertEqual(self.client.call('/v1/status')["records"],2)
+        self.assertEqual(provider.outbox.captured_host_ids("session-a"),{"id:u1","id:a1"})
 
     def test_host_message_id_helpers_prefer_stable_id_and_fall_back(self):
         provider=self.provider()

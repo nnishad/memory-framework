@@ -2,6 +2,7 @@
 import json
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -153,6 +154,20 @@ class RetrievalTests(Fixture):
         h=Hybrid(self.store,start=False); self.addCleanup(h.close)
         self.assertFalse(h._semantic_enabled)  # operator/test override without any config change
         self.assertNotIn("semantic",h.status()["capabilities"])
+
+    def test_concurrent_semantic_initialization_constructs_one_engine(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import patch
+        calls=[]
+        class FakeSemantic:
+            def __init__(self,*args,**kwargs):
+                calls.append(1);time.sleep(.05)
+        h=Hybrid(self.store,start=False);self.addCleanup(h.close)
+        with patch('personal_memory.semantic.SemanticIndex',FakeSemantic):
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                engines=list(pool.map(lambda _:h._ensure_semantic(),range(8)))
+        self.assertEqual(len(calls),1)
+        self.assertTrue(all(engine is engines[0] for engine in engines))
 
     def test_rerank_noops_when_explicitly_disabled(self):
         a,b=self.put(record(1,"alpha answer here"),record(2,"beta answer here"))

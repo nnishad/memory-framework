@@ -10,7 +10,7 @@ SQLite. Arbitrary extension JSON is preserved without changing the database sche
 not repeat the whole payload. Original source content remains distinct from derived memory claims.
 
 The native Hermes provider supplies guidance and twenty tools, queues conversations durably and
-prefetches bounded context asynchronously. Retrieval combines keyword, managed Hindsight and optional additional semantic candidates,
+prefetches bounded context asynchronously. Retrieval combines keyword, managed Hindsight and default local semantic candidates,
 applies source/date/entity filters, fuses ranks, applies bounded graph expansion, best-effort
 cross-encoder reranking and recency weighting, and rehydrates local evidence. Unknown/deleted external
 IDs are discarded. Confirmed, date-valid account/person links can expand a person's history.
@@ -26,7 +26,7 @@ Tool-call IDs are tracked the same way, so checkpoint and session-end replay do 
 reprocess the full tool-result history.
 
 Automatic recall launches one bounded fast search and waits up to `prefetch_wait_ms` (200 ms by
-default). A default `personal_memory_search` fallback reuses the completed, generation-checked result
+default). An explicit unfiltered `personal_memory_search` at `fast` depth with a limit of at most four reuses the completed, generation-checked result
 instead of issuing the same lookup again. The provider tracks canonical IDs already shown in the
 session and omits them from later automatic context. Evidence tool calls request the compact view,
 which contains one text copy and source coordinates; the full administrative `/v1/evidence` response
@@ -36,10 +36,9 @@ guidance reduce the fixed model prompt cost.
 `semantic.py` provides FastEmbed or a compatible HTTP embedding endpoint. FastEmbed chunks use tokenizer
 spans; HTTP chunks use an operator-defined character window. SQLite stores vectors. Optional HNSW is
 rebuilt from SQLite; exact NumPy ranking is the fallback. Real-model/scale qualification remains open.
-This semantic component is optional because managed Hindsight already supplies vector candidates in
-the supported default path and keyword search provides a local deterministic channel. Enable the extra
-index when local/offline multilingual similarity, explicit span selection or a second independent
-embedding channel justifies its model, storage and indexing cost. When a compatible Hindsight response
+The local semantic component is enabled by default so relevance does not depend on Hindsight exposing
+similarity scores. Disable it with `retrieval.semantic.enabled: false` or
+`PERSONAL_MEMORY_DISABLE_SEMANTIC=1` when its model and indexing cost are not appropriate. When a compatible Hindsight response
 includes a semantic score, the relevance gate consumes it; older 0.9.2 responses remain valid.
 
 `hindsight.py` implements retain, recall and document deletion with a durable sync journal.

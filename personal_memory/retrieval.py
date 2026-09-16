@@ -82,6 +82,7 @@ class Hybrid:
         self._semantic_enabled = self.semantic is not None or (
             bool(self._semantic_cfg.get("enabled", True)) and not _semantic_disabled_by_env())
         self._semantic_failed = False
+        self._semantic_lock = threading.Lock()
         # The external Hindsight engine stays opt-in: it needs an operator URL/bank, so it is
         # constructed eagerly only when explicitly configured.
         hindsight_cfg = self.config.get("hindsight", {})
@@ -154,18 +155,23 @@ class Hybrid:
         """
         if self.semantic is not None or not self._semantic_enabled or self._semantic_failed:
             return self.semantic
-        try:
-            from .semantic import SemanticIndex
-            engine = SemanticIndex(self.store, self._semantic_cfg)
-        except Exception as error:
-            self.semantic = None
-            self._semantic_failed = True
-            self.errors["semantic"] = type(error).__name__ + ": semantic index unavailable; using keyword/hindsight"
-            return None
-        self.semantic = engine
-        if self._start:
-            self._start_index_thread(engine)
-        return self.semantic
+        # Warmup and the request pool can arrive concurrently. Hold one initialization lock across
+        # model construction so only one ONNX session and one indexing worker can be published.
+        with self._semantic_lock:
+            if self.semantic is not None or not self._semantic_enabled or self._semantic_failed:
+                return self.semantic
+            try:
+                from .semantic import SemanticIndex
+                engine = SemanticIndex(self.store, self._semantic_cfg)
+            except Exception as error:
+                self.semantic = None
+                self._semantic_failed = True
+                self.errors["semantic"] = type(error).__name__ + ": semantic index unavailable; using keyword/hindsight"
+                return None
+            self.semantic = engine
+            if self._start:
+                self._start_index_thread(engine)
+            return self.semantic
 
     def close(self):
         self.stop.set()

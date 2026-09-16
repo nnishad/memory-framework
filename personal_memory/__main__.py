@@ -22,7 +22,7 @@ def main(argv=None):
             p.add_argument("--port", type=int, default=8766)
             p.add_argument("--exclusive", action="store_true", help="Disable built-in memory files without deleting them")
             p.add_argument("--auto-consolidate",action="store_true",help="Enable local extractive consolidation of imported records")
-            p.add_argument("--semantic", action="store_true", help="Enable local multilingual embeddings; requires [semantic] extra")
+            p.add_argument("--semantic", action="store_true", help="Compatibility flag; local multilingual embeddings are enabled by default")
         elif name == 'attach':
             p.add_argument('file',type=Path)
             p.add_argument('--record-id',required=True)

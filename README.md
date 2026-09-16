@@ -15,7 +15,7 @@ accuracy of an untested model, personal archive or deployment.
 | Layer | Implemented behavior |
 | --- | --- |
 | Ingestion | Required versioned core, namespaced extensions, immutable source revisions, provenance receipts, atomic batches/cursors, WhatsApp/email/health export adapters |
-| Recall | Keyword/Hindsight by default, optional additional embeddings/HNSW, temporal and identity filters, progressive rounds, default graph/recency ranking and best-effort cross-encoder reranking, optional model planner/reranker adapters, duplicate context suppression |
+| Recall | Keyword/Hindsight plus default local multilingual embeddings, optional HNSW, temporal and identity filters, progressive rounds, default graph/recency ranking and best-effort cross-encoder reranking, optional model planner/reranker adapters, duplicate context suppression |
 | Knowledge | Quoted beliefs with conflicts and validity, contextual preferences, dated typed relationships, bounded graph traversal, reviewed episode summaries |
 | Measurements | Metric/unit validation, immutable custom metric definitions, explicit conversions and SQL aggregates |
 | Consolidation | Immutable evidence snapshots, whole-source chunk partitioning, leased jobs, restartable cursor, local extractive or configured model adapter, pending proposals and independent review |

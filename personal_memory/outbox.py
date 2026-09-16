@@ -165,6 +165,11 @@ class Outbox:
             if host_id:
                 db.execute("INSERT OR IGNORE INTO message_capture_ids VALUES(?,?)",(session_id,host_id))
 
+    def mark_message_host_id(self, session_id, host_id):
+        """Attach a stable host identity to a message already captured at turn start."""
+        with self.connect() as db:
+            db.execute("INSERT OR IGNORE INTO message_capture_ids VALUES(?,?)",(session_id,host_id))
+
     def observed_tools(self, session_id):
         with self.connect() as db:
             return {row[0] for row in db.execute(

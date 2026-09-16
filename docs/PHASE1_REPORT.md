@@ -6,18 +6,18 @@
 - total scenarios: 7  | passed: 7  | failed: 0
 - aggregate tokens: 19758 in / 5718 out over 21 api calls
 - mean turn latency: 12.04s
-- abstention correct: 1 / hallucinations: 0
+- abstention correct: 1 / forbidden-pattern hits in the abstention case: 0
 
 ## Per-scenario
 
 | scenario | class | correct | latency (s) | tokens (in/out) | api_calls | detail |
 | --- | --- | :-: | --: | --: | --: | --- |
 | paraphrase-paint | paraphrase | yes | 10.25 | 2585/610 | 2 | must_any_ok=True must_none_hits=[] |
-| cross-session-cabin | cross-session | yes | 10.38 | 3538/581 | 3 | must_any_ok=True must_none_hits=[] |
+| cross-session-cabin | multi-source | yes | 10.38 | 3538/581 | 3 | must_any_ok=True must_none_hits=[] |
 | correction-codename | correction | yes | 15.0 | 3653/1290 | 4 | must_any_ok=True must_none_hits=[] recency=ok (mentioned=True qualified=True) |
 | contradiction-beverage | contradiction | yes | 14.64 | 2513/1223 | 3 | must_any_ok=True must_none_hits=[] conflict_hints=['both', 'conflict', 'contradict', 'record'] |
-| compression-vault | compression | yes | 16.16 | 3121/1126 | 3 | must_any_ok=True must_none_hits=[] |
-| interrupted-reservation | interrupted | yes | 11.34 | 2481/664 | 4 | must_any_ok=True must_none_hits=[] |
+| compression-vault | distractor-pressure | yes | 16.16 | 3121/1126 | 3 | must_any_ok=True must_none_hits=[] |
+| interrupted-reservation | incomplete-event | yes | 11.34 | 2481/664 | 4 | must_any_ok=True must_none_hits=[] |
 | unknown-passport | abstention | yes | 6.49 | 1867/224 | 2 | abstain_markers_hit=True fabricated=False |
 
 ## Answers (truncated)
@@ -112,18 +112,21 @@ Step 2 measured MiniLM multilingual similarity 0.4894 on a zero-lexical-overlap 
 
 ## Scope statement
 
-Real `hermes -z` oneshot turns against the ephemeral Hermes profile + deployed personal-memory provider + host llama.cpp model. Store seeded via direct /v1/ingest; canonical reset between scenarios. Production store and archive untouched.
+Real `hermes -z` oneshot turns against the ephemeral Hermes profile + deployed personal-memory provider + host llama.cpp model. Store seeded via direct /v1/ingest; canonical reset between scenarios. Production store and archive untouched. These cases measure retrieval and answer quality; they do not execute session-switch, compression or interrupted-turn lifecycle hooks.
 
-## Proven in-loop vs still-mock-only
+## Proven in-loop and post-review corrections
 
-Proven through the real Hermes MemoryManager + deployed provider on `192.168.68.67`, no mocks:
+The original phase run exercised the real Hermes MemoryManager and deployed provider on
+`192.168.68.67`. Fixes 2 and 3 below were subsequently strengthened after code review; their
+corrected edge cases are proven by current provider integration tests and require a new live run
+before describing the corrected build itself as deployed:
 
 - **Fix 1** — bare `personal_memory_search` runs `depth=balanced/limit=8` on a fresh round-trip; explicit `depth=fast/limit=4` reuses the automatic prefetch with zero new `/v1/search` calls. Two named checks pass in `scripts/verify_correctness_fixes.py`.
-- **Fix 2** — `on_pre_compress` bumps the injection epoch and previously-suppressed evidence re-injects afterwards; a claim whose `status`/`valid_to` changes produces a different `_claim_fingerprint`; `already_in_context` reflects `_row_retained` accurately. Three named checks pass.
-- **Fix 3** — `_host_message_id` returns `id:host-42` for a stable host id and the durable `message_capture_ids` table dedups across `sync_turn` and `on_session_end` even when the ordinal counter would collide; the no-host-id fallback still dedups to one capture. Four named checks pass.
+- **Fix 2** — `on_pre_compress` bumps the injection epoch and cached backend evidence is reformatted against current prompt exposure, so the same query re-injects immediately after compression; a changed claim fingerprint also re-injects. Regression coverage exercises the cached same-query path without manual invalidation.
+- **Fix 3** — stable host message IDs are the primary deduplication identity. Occurrence counters apply only when a row has no stable ID, so an earlier repeated message can be backfilled without being hidden by a later identical message. A turn-start capture attaches its subsequently available host ID without duplicating the record.
 - **Fix 4** — `RelevanceGate.assess` admits a lexical-overlap-free candidate purely from the semantic floor and denies below it; end-to-end a zero-content-word paraphrase ("What shade of paint do I love the most?" vs. "My favourite colour is cerulean.") is accepted via the semantic channel with `lexical_anchors=False` and `semantic_similarity≈0.49`. Two named checks pass.
 - **Fix 5** — `personal_memory_browse`/`timeline` add no injected-exposure rows (retained-map unchanged before/after); `on_session_switch` scoped to `{old, new}` leaves a third session's state intact. Three named checks pass.
-- **Live answer-quality** — seven `hermes -z` turns against the host llama.cpp model cover paraphrase, cross-session, correction, contradiction, compression, interrupted-record and unknown/abstention; all seven score correct on the re-run after the correction-scorer fix, with `hallucinations=0` and the abstention case explicitly refusing to invent a passport number.
+- **Live answer-quality** — seven `hermes -z` turns against the host llama.cpp model cover paraphrase, multi-source synthesis, correction, contradiction, retrieval under distractor pressure, incomplete-event handling and unknown/abstention. All seven historical answers met their content checks, and the abstention answer matched none of the configured forbidden identifier patterns. Lifecycle behavior is covered separately by provider verification and unit tests.
 
 Still covered only by deterministic mocks / unit fixtures (Phase 1 does not upgrade these):
 
@@ -139,4 +142,3 @@ The shipped default `relevance.semantic_minimum=0.5` sits above the measured Min
 ## Correction-scorer history (honest baseline note)
 
 Run #1 scored 6/7 with the correction case marked incorrect because the model wrote *“it was previously ‘Falcon’ from early 2024, now Osprey”* and the initial `must_none=["Falcon"]` heuristic penalised any mention of the superseded value. The behaviour was correct; the scorer was wrong. Run #2 uses `recency_qualification` (mention of the old value is only allowed when a temporal marker like “previously”/“was”/a past date is also present) and produces the 7/7 reported above. No provider code changed between the two runs.
-

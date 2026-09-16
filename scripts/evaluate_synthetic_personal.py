@@ -235,7 +235,7 @@ def main():
         for c in r['unsupported_queries']:lines.append(f"- {name}: {c['query']} Returned {c['candidate_count']} candidates; sufficiency `{c['evidence_sufficiency']}`.")
     lines+=['','## Lifecycle checks','']+[f"- {'PASS' if c['passed'] else 'FAIL'}: {c['name']}"+(f" — {c['error']}" if 'error' in c else '') for c in report['checks']]
     lines+=['','## Limits','']+['- '+v for v in report['limitations']]
-    lines+=['','## Reproduce','','Run from the project root:','', '```sh','python scripts/evaluate_synthetic_personal.py --model-path /absolute/path/to/minilm --output-dir docs/synthetic-personal','```','','Omit `--model-path` for lexical and lifecycle tests without embedding dependencies. Install the project semantic optional dependencies to use the model. The archive and questions are generated deterministically; isolated temporary databases are removed after each run.','']
+    lines+=['','## Reproduce','','Run from the project root:','', '```sh','python scripts/evaluate_synthetic_personal.py --model-path /absolute/path/to/minilm --output-dir docs/synthetic-personal','```','','Omit `--model-path` for lexical and lifecycle-only benchmark runs. FastEmbed is a core runtime dependency; `--model-path` selects the local model used by this benchmark semantic channel. The archive and questions are generated deterministically; isolated temporary databases are removed after each run.','']
     (out/'REPORT.md').write_text('\n'.join(lines));print(json.dumps({k:v for k,v in report.items() if k not in {'retrieval','checks'}},indent=2))
     return 0 if report['checks_passed']==report['checks_total'] else 1
 

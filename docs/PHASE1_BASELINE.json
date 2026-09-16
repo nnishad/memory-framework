@@ -7,7 +7,7 @@
     {
       "scenario_id": "paraphrase-paint",
       "class": "paraphrase",
-      "answer": "Based on your stored preference \u2014 your favorite color is **cerulean** \u2014 a **cerulean** (cerulean-blue) shade of paint would be the one you'd enjoy most for a bedroom wall.\n\nThat's the only color preference I have on record, so it's the honest answer I can give you. If you want, tell me the room's vibe (calm/cozy, bright/airy, grounding) and I can suggest specific cerulean tones and finishes (matte vs. eggshell) that fit a bedroom best.",
+      "answer": "Based on your stored preference — your favorite color is **cerulean** — a **cerulean** (cerulean-blue) shade of paint would be the one you'd enjoy most for a bedroom wall.\n\nThat's the only color preference I have on record, so it's the honest answer I can give you. If you want, tell me the room's vibe (calm/cozy, bright/airy, grounding) and I can suggest specific cerulean tones and finishes (matte vs. eggshell) that fit a bedroom best.",
       "rc": 0,
       "latency_sec": 10.25,
       "input_tokens": 2585,
@@ -21,12 +21,13 @@
       "seed_record_ids": [
         "rec_27684096cd1d5fa1af116fee5408f7fe"
       ],
-      "gold": "cerulean"
+      "gold": "cerulean",
+      "process_ok": true
     },
     {
       "scenario_id": "cross-session-cabin",
-      "class": "cross-session",
-      "answer": "Based on my memory, here's what I found:\n\n**WiFi password:** `Larchwood-42` \u2014 but this is a *reported* claim from a past conversation (\"cabin-chat\"), with no date, no verification, and no network name recorded.\n\nA few caveats worth flagging before you rely on it:\n\n- **No SSID stored.** I don't have the network name (e.g., \"Larchwood\" or similar), so you'd need to read that off the router when you arrive.\n- **The recorded trip was \"next month,\"** not this weekend \u2014 so if the password changed since then, this may be stale.\n- **It's unverified.** The claim came from a conversation, not from actually connecting at the cabin.\n\nIf you want, I can save the SSID too when you have it, or flag the password as \"verify before the weekend\" so it doesn't get treated as current. Want me to do either?",
+      "class": "multi-source",
+      "answer": "Based on my memory, here's what I found:\n\n**WiFi password:** `Larchwood-42` — but this is a *reported* claim from a past conversation (\"cabin-chat\"), with no date, no verification, and no network name recorded.\n\nA few caveats worth flagging before you rely on it:\n\n- **No SSID stored.** I don't have the network name (e.g., \"Larchwood\" or similar), so you'd need to read that off the router when you arrive.\n- **The recorded trip was \"next month,\"** not this weekend — so if the password changed since then, this may be stale.\n- **It's unverified.** The claim came from a conversation, not from actually connecting at the cabin.\n\nIf you want, I can save the SSID too when you have it, or flag the password as \"verify before the weekend\" so it doesn't get treated as current. Want me to do either?",
       "rc": 0,
       "latency_sec": 10.38,
       "input_tokens": 3538,
@@ -41,7 +42,8 @@
         "rec_e78f3c2a8e24bb9ee0e45d7cfb59eeeb",
         "rec_89b7844538d8a4636dd7333d6814fe25"
       ],
-      "gold": "Larchwood-42 (surfaced from a different provenance source than the trip plan)"
+      "gold": "Larchwood-42 (surfaced from a different provenance source than the trip plan)",
+      "process_ok": true
     },
     {
       "scenario_id": "correction-codename",
@@ -63,12 +65,13 @@
         "rec_58123e8ead167bd0267471a902798a5e",
         "rec_eb000935f493def4f9705e168bae3be1"
       ],
-      "gold": "Osprey presented as current; any mention of Falcon is qualified as past/superseded."
+      "gold": "Osprey presented as current; any mention of Falcon is qualified as past/superseded.",
+      "process_ok": true
     },
     {
       "scenario_id": "contradiction-beverage",
       "class": "contradiction",
-      "answer": "Two conflicting records exist in memory, and I can't tell which is current without more context:\n\n- **\"I have not touched coffee in years; my morning drink is green tea.\"** (source: `bev-tea`)\n- **\"I start every morning with a large black coffee.\"** (source: `bev-coffee`)\n\nBoth are stored as equally-weighted first revisions with no timestamp, so they directly contradict each other. If you can tell me which is the current truth (or when the change happened), I'll reconcile them and remove the stale one so future questions give a clean answer.\n\nWhich is it \u2014 green tea or coffee?",
+      "answer": "Two conflicting records exist in memory, and I can't tell which is current without more context:\n\n- **\"I have not touched coffee in years; my morning drink is green tea.\"** (source: `bev-tea`)\n- **\"I start every morning with a large black coffee.\"** (source: `bev-coffee`)\n\nBoth are stored as equally-weighted first revisions with no timestamp, so they directly contradict each other. If you can tell me which is the current truth (or when the change happened), I'll reconcile them and remove the stale one so future questions give a clean answer.\n\nWhich is it — green tea or coffee?",
       "rc": 0,
       "latency_sec": 14.64,
       "input_tokens": 2513,
@@ -84,11 +87,12 @@
         "rec_28f9c111d748d14ab864681a73d8dac2",
         "rec_97243ea7654b8ab68c7eef78b0957042"
       ],
-      "gold": "Both beverages surfaced with a conflict marker; the model must not silently pick one."
+      "gold": "Both beverages surfaced with a conflict marker; the model must not silently pick one.",
+      "process_ok": true
     },
     {
       "scenario_id": "compression-vault",
-      "class": "compression",
+      "class": "distractor-pressure",
       "answer": "The combination to your attic vault is **amber-crystal-7**.\n\nThat's what's stored in your memory (source: `eval`, record `vault-target`). Nothing has changed since it was recorded, so that's the current value.",
       "rc": 0,
       "latency_sec": 16.16,
@@ -121,12 +125,13 @@
         "rec_3963abebcc112c9dea14297514b77a7a",
         "rec_3abfab9138f4d5b4203c6ec532327094"
       ],
-      "gold": "amber-crystal-7"
+      "gold": "amber-crystal-7",
+      "process_ok": true
     },
     {
       "scenario_id": "interrupted-reservation",
-      "class": "interrupted",
-      "answer": "Everything my memory holds about your Luigi's reservation is exactly one record, and it's deliberately incomplete:\n\n**Luigi's reservation**\n- Source: `eval` (source_id: `luigis`), revision 1, document\n- What's recorded: *\"I booked a table at Luigi's for May 3rd, but I did not confirm whether it is lunch or dinner.\"*\n- Verified facts:\n  - There is a booked table at Luigi's.\n  - Date: May 3rd.\n  - Restaurant: Luigi's.\n- Unconfirmed / unknown:\n  - Meal time \u2014 lunch or dinner \u2014 is **not** established.\n  - Time of day, number of guests, and party size are not recorded.\n\nThere's nothing else in the beliefs store, no conflicts, and no additional claims about this reservation. The only thing I actually know is that a table was booked for May 3rd at Luigi's; everything else remains unconfirmed.\n\nWa",
+      "class": "incomplete-event",
+      "answer": "Everything my memory holds about your Luigi's reservation is exactly one record, and it's deliberately incomplete:\n\n**Luigi's reservation**\n- Source: `eval` (source_id: `luigis`), revision 1, document\n- What's recorded: *\"I booked a table at Luigi's for May 3rd, but I did not confirm whether it is lunch or dinner.\"*\n- Verified facts:\n  - There is a booked table at Luigi's.\n  - Date: May 3rd.\n  - Restaurant: Luigi's.\n- Unconfirmed / unknown:\n  - Meal time — lunch or dinner — is **not** established.\n  - Time of day, number of guests, and party size are not recorded.\n\nThere's nothing else in the beliefs store, no conflicts, and no additional claims about this reservation. The only thing I actually know is that a table was booked for May 3rd at Luigi's; everything else remains unconfirmed.\n\nWa",
       "rc": 0,
       "latency_sec": 11.34,
       "input_tokens": 2481,
@@ -140,12 +145,13 @@
       "seed_record_ids": [
         "rec_4116c614cc46cc35162abe67cfd0a210"
       ],
-      "gold": "May 3rd at Luigi's with the meal ambiguity preserved (not resolved)."
+      "gold": "May 3rd at Luigi's with the meal ambiguity preserved (not resolved).",
+      "process_ok": true
     },
     {
       "scenario_id": "unknown-passport",
       "class": "abstention",
-      "answer": "I don't have any information about your passport number. My memory search came back with no relevant evidence \u2014 there's nothing stored about it.\n\nIf you've shared this before in a different session, it may not be indexed yet, or it may never have been recorded. I won't invent or guess a passport number, since that's sensitive identification data.\n\nTo get me to remember it: just tell me the number and I'll store it as a factual record so I can retrieve it next time.",
+      "answer": "I don't have any information about your passport number. My memory search came back with no relevant evidence — there's nothing stored about it.\n\nIf you've shared this before in a different session, it may not be indexed yet, or it may never have been recorded. I won't invent or guess a passport number, since that's sensitive identification data.\n\nTo get me to remember it: just tell me the number and I'll store it as a factual record so I can retrieve it next time.",
       "rc": 0,
       "latency_sec": 6.49,
       "input_tokens": 1867,
@@ -159,7 +165,8 @@
       "hallucinated": false,
       "detail": "abstain_markers_hit=True fabricated=False",
       "seed_record_ids": [],
-      "gold": "Model must abstain; no fabricated passport identifier."
+      "gold": "Model must abstain; no fabricated passport identifier.",
+      "process_ok": true
     }
   ],
   "aggregate": {
@@ -171,7 +178,7 @@
         "total": 1,
         "passed": 1
       },
-      "cross-session": {
+      "multi-source": {
         "total": 1,
         "passed": 1
       },
@@ -183,11 +190,11 @@
         "total": 1,
         "passed": 1
       },
-      "compression": {
+      "distractor-pressure": {
         "total": 1,
         "passed": 1
       },
-      "interrupted": {
+      "incomplete-event": {
         "total": 1,
         "passed": 1
       },
@@ -201,12 +208,13 @@
     "total_api_calls": 21,
     "mean_latency_sec": 12.04,
     "abstention_correct": 1,
-    "hallucinations": 0
+    "abstention_forbidden_pattern_hits": 0
   },
-  "scope": "Real `hermes -z` oneshot turns against the ephemeral Hermes profile + deployed personal-memory provider + host llama.cpp model. Store seeded via direct /v1/ingest; canonical reset between scenarios. Production store and archive untouched.",
+  "scope": "Real `hermes -z` oneshot turns against the ephemeral Hermes profile + deployed personal-memory provider + host llama.cpp model. Store seeded via direct /v1/ingest; canonical reset between scenarios. Production store and archive untouched. These cases measure retrieval and answer quality; they do not execute session-switch, compression or interrupted-turn lifecycle hooks.",
   "relevance_floor_used": 0.35,
   "relevance_floor_shipped_default": 0.5,
   "calibration_finding": "Step 2 measured MiniLM multilingual similarity 0.4894 on a zero-lexical-overlap paraphrase pair; the shipped default 0.5 floor would reject it. This baseline therefore uses semantic_minimum=0.35 in the ephemeral profile and flags the shipped default as an open calibration question.",
   "real_manager_loop_tested": true,
-  "live_llm_tested": true
+  "live_llm_tested": true,
+  "provider_lifecycle_tested_by_this_harness": false
 }

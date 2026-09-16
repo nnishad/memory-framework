@@ -87,7 +87,9 @@ request. Both preserve fusion order before recency ranking and record a diagnost
 Set `graph.enabled: false` or `temporal.weight: 0` to disable those ranking features. These
 backend settings are separate from the optional `intelligence.recall` model adapters above.
 ASGI startup warms retrieval in a background thread; startup completion does not wait for it.
-Additional multilingual embeddings are opt-in via `setup --semantic` and the `[semantic]` extra.
+Local multilingual embeddings are enabled by default and FastEmbed is a core dependency. Disable them
+with `retrieval.semantic.enabled: false` or `PERSONAL_MEMORY_DISABLE_SEMANTIC=1`. The `--semantic` setup
+flag and `[semantic]` dependency group remain accepted as compatibility aliases for older automation.
 
 ## Strict operation discovery and roles
 
