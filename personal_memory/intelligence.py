@@ -46,13 +46,14 @@ class Intelligence:
     def __init__(self,store):self.store=store;self.learning=Learning(store)
 
     def _quote(self,db,evidence):
+        from . import lifecycle
         if not isinstance(evidence,list) or not 1<=len(evidence)<=32:raise ValueError('Evidence must contain 1..32 quotes')
         ids=[]
         for e in evidence:
             if not isinstance(e,dict) or set(e)!={'record_id','quote'}:raise ValueError('Expected record_id and quote')
             quote=required_text(e['quote'],'quote',12000)
             row=db.execute('SELECT text FROM records WHERE id=? AND deleted=0',(e['record_id'],)).fetchone()
-            if not row or quote not in row[0]:raise ValueError('Quote must occur in live source evidence')
+            if not row or not lifecycle.live_and_visible(db,e['record_id']) or quote not in row[0]:raise ValueError('Quote must occur in live source evidence')
             ids.append(e['record_id'])
         return sorted(set(ids))
 
@@ -71,9 +72,10 @@ class Intelligence:
                 if obj['actor']!=actor or sorted(obj['payload']['record_ids'])!=sorted(record_ids):raise ValueError('Snapshot key conflict')
                 return obj
             hashes={}
+            from . import lifecycle
             for rid in record_ids:
                 row=db.execute('SELECT fingerprint FROM records WHERE id=? AND deleted=0',(rid,)).fetchone()
-                if not row:raise ValueError('Missing snapshot evidence')
+                if not row or not lifecycle.live_and_visible(db,rid):raise ValueError('Missing snapshot evidence')
                 hashes[rid]=row[0]
             coverage=[dict(r) for r in db.execute('SELECT source,state,through_at,updated_at FROM sources ORDER BY source')]
             return self.learning._put(db,'snapshot',key,{'record_ids':record_ids,'fingerprints':hashes,'coverage':coverage,'cutoff':now()},actor,record_ids)
@@ -208,7 +210,8 @@ class Intelligence:
                 blocked=db.execute("SELECT 1 FROM task_dependencies d JOIN task_runtime t ON t.object_id=d.dependency_id JOIN learning_objects o ON o.id=t.object_id WHERE d.task_id=? AND (t.state!='completed' OR o.state!='recorded')",(task_id,)).fetchone()
                 if blocked:raise ValueError('Task dependencies are incomplete')
             for rid in refs:
-                if not db.execute('SELECT 1 FROM records WHERE id=? AND deleted=0',(rid,)).fetchone():raise ValueError('Live transition evidence required')
+                from . import lifecycle
+                if not lifecycle.live_and_visible(db,rid):raise ValueError('Live transition evidence required')
             db.executemany('INSERT OR IGNORE INTO learning_evidence VALUES(?,?)',[(task_id,r) for r in refs])
             if state in {'completed','cancelled'}:self.store.deletions.append([('done_' if state=='completed' else 'cancel_')+task_id[4:]])
             db.execute('UPDATE task_runtime SET version=version+1,state=?,updated_at=? WHERE object_id=?',(state,now(),task_id))

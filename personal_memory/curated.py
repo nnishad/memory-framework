@@ -60,9 +60,8 @@ def _ids(db, values):
         rid = required_text(value, "evidence_id", 100)
         if rid not in result:
             result.append(rid)
-    for rid in result:
-        if not db.execute("SELECT 1 FROM records WHERE id=? AND deleted=0", (rid,)).fetchone():
-            raise ValueError("Curated memory requires live canonical evidence")
+    from . import lifecycle
+    lifecycle.require_live_evidence(db, result, message="Curated memory requires live canonical evidence")
     return result
 
 

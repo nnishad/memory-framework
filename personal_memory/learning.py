@@ -61,9 +61,8 @@ class Learning:
             self._get(db,parent)
             refs.update(r[0] for r in db.execute('SELECT record_id FROM learning_evidence WHERE object_id=?',(parent,)))
         if not refs:raise ValueError('Learning requires source evidence')
-        for rid in refs:
-            if not db.execute('SELECT 1 FROM records WHERE id=? AND deleted=0',(rid,)).fetchone():
-                raise ValueError('Learning requires live evidence')
+        from . import lifecycle
+        lifecycle.require_live_evidence(db, refs, message='Learning requires live evidence')
         db.execute('INSERT INTO learning_objects VALUES(?,?,?,?,?,?,?,?)',
                    (oid,kind,key,1,'candidate' if kind=='candidate' else 'recorded',raw,actor,now()))
         db.executemany('INSERT INTO learning_evidence VALUES(?,?)',[(oid,r) for r in sorted(refs)])

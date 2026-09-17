@@ -170,6 +170,22 @@ canonical reset can complete even if external clearing fails. Restart sessions t
 already loaded prompts. Native transcripts, external sources and backups are outside this
 reset; it is not secure physical erasure.
 
+## Unified retirement
+
+Explicit supersession (`/v1/supersede`) and source-synchronization replacement run through
+one transaction-aware retirement operation. Retiring evidence hides the record and its
+descendants from current recall while preserving them for historical inspection, and it
+cascades to every dependent artifact in the same transaction: awareness evidence, learning
+artifacts, curated entries and derived intelligence. A record is only "live and visible"
+when it is undeleted and not hidden; that single check gates creation of beliefs, learning
+artifacts, snapshots, curated memory and consolidation results, so historical evidence can
+still be inspected but can never silently support a current conclusion.
+
+Restoring a source record's visibility does not reactivate conclusions that were already
+invalidated. An idempotent repair pass scans active artifacts whose evidence is already
+retired and invalidates them; re-running it changes nothing. Queued consolidation applies
+the same pass before accepting a proposal.
+
 `python -m personal_memory prune-hindsight --hermes-home <profile>` reports stale
 framework-owned embedded profiles/instances. Add `--apply` to remove eligible stale entries;
 the active profile is preserved. Stop the service before applying removal so a daemon does

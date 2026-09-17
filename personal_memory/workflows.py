@@ -269,6 +269,10 @@ class Workflows:
     def accept_consolidation(self,*,result_id,actor):
         # Independent administrative review publishes attributed inferred beliefs.
         # It does not label their contents verified or grant permissions.
+        from . import lifecycle
+        # Retire any conclusions already built on evidence that has since been
+        # hidden or forgotten before this review publishes new beliefs.
+        lifecycle.repair_retired_dependencies(self.store)
         with self.store.lock,self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE');result=self.learning._get(db,result_id,'consolidation')
             if result['state'] not in {'candidate','recorded'}:raise ValueError('Consolidation unavailable')

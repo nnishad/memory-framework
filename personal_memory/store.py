@@ -282,17 +282,12 @@ class Store(Catalog):
         return {"states": {sid: "forgotten" if self.source_key(source, sid) in blocked else "open" for sid in source_ids}}
 
     def supersede(self,record_id,replacement_id=None):
+        from . import lifecycle
         with self.lock,self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM records WHERE id=? AND deleted=0',(record_id,)).fetchone():raise ValueError('Missing live retired record')
             if replacement_id and not db.execute('SELECT 1 FROM records WHERE id=? AND deleted=0',(replacement_id,)).fetchone():raise ValueError('Missing live replacement')
-            def descendants(root):
-                return {r[0] for r in db.execute('WITH RECURSIVE d(id) AS (SELECT ? UNION SELECT child_id FROM record_dependencies JOIN d ON parent_id=d.id) SELECT id FROM d',(root,))}
-            hidden=descendants(record_id)-(descendants(replacement_id) if replacement_id else set())
-            from . import awareness
-            for rid in hidden:
-                awareness.invalidate_record(db, rid)
-            db.executemany('INSERT OR REPLACE INTO record_visibility VALUES(?,1,?)',[(rid,replacement_id) for rid in hidden])
+            hidden=lifecycle.retire(db,self,record_id,replacement=replacement_id,exclude_replacement=True)
             self.audit(db,'supersede',record_id)
         return {'retired':record_id,'replacement_id':replacement_id,'hidden_records':len(hidden),'history_preserved':True}
 
