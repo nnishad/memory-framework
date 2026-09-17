@@ -55,32 +55,40 @@ def run_adapter(entrypoint,configuration,request,timeout=30):
     return result
 
 
+def validate_intelligence_config(config=None):
+    """Pure operator-configuration check, reusable before any worker is started."""
+    config={} if config is None else config
+    if not isinstance(config,dict) or set(config)-{'timeout','adapters','capabilities','auto_consolidate','learning_policies','event_handler','recall'}:raise ValueError('Unknown intelligence configuration')
+    if type(config.get('auto_consolidate',False)) is not bool:raise ValueError('auto_consolidate must be boolean')
+    if not isinstance(config.get('learning_policies',{}),dict):raise ValueError('Invalid learning policies')
+    for scope,policy in config.get('learning_policies',{}).items():
+        required_text(scope,'scope',12000)
+        if not isinstance(policy,dict) or set(policy)!={'suite_id','promote'} or type(policy['promote']) is not bool:raise ValueError('Invalid learning policy')
+        required_text(policy['suite_id'],'suite_id',200)
+    for name in ['capabilities','adapters']:
+        if not isinstance(config.get(name,{}),dict):raise ValueError('Invalid adapter registry')
+        for key,adapter in config.get(name,{}).items():
+            required_text(key,'adapter name',200)
+            if not isinstance(adapter,dict) or set(adapter)-{'entrypoint','config'} or ':' not in adapter.get('entrypoint',''):raise ValueError('Invalid adapter declaration')
+    if config.get('event_handler'):
+        adapter=config['event_handler']
+        if not isinstance(adapter,dict) or set(adapter)-{'entrypoint','config'} or ':' not in adapter.get('entrypoint',''):raise ValueError('Invalid event adapter')
+    timeout=config.get('timeout',20)
+    if type(timeout) is not int or not 1<=timeout<=60:raise ValueError('Worker timeout must be 1..60')
+    adapters={'consolidate':{'entrypoint':'personal_memory.adapters:extractive','config':{}},**config.get('adapters',{})}
+    for kind,value in adapters.items():
+        if kind not in {'consolidate','evaluate','procedure'} or not isinstance(value,dict) or set(value)-{'entrypoint','config'}:raise ValueError('Invalid operator adapter configuration')
+        required_text(value.get('entrypoint'),'entrypoint',300)
+    return config
+
+
 class Workflows:
     def __init__(self,store,config=None):
-        self.store=store;self.learning=Learning(store);self.config=config or {}
-        if not isinstance(self.config,dict) or set(self.config)-{'timeout','adapters','capabilities','auto_consolidate','learning_policies','event_handler','recall'}:raise ValueError('Unknown intelligence configuration')
-        if type(self.config.get('auto_consolidate',False)) is not bool:raise ValueError('auto_consolidate must be boolean')
-        if not isinstance(self.config.get('learning_policies',{}),dict):raise ValueError('Invalid learning policies')
-        for scope,policy in self.config.get('learning_policies',{}).items():
-            required_text(scope,'scope',12000)
-            if not isinstance(policy,dict) or set(policy)!={'suite_id','promote'} or type(policy['promote']) is not bool:raise ValueError('Invalid learning policy')
-            required_text(policy['suite_id'],'suite_id',200)
-        for name in ['capabilities','adapters']:
-            if not isinstance(self.config.get(name,{}),dict):raise ValueError('Invalid adapter registry')
-            for key,adapter in self.config.get(name,{}).items():
-                required_text(key,'adapter name',200)
-                if not isinstance(adapter,dict) or set(adapter)-{'entrypoint','config'} or ':' not in adapter.get('entrypoint',''):raise ValueError('Invalid adapter declaration')
-        if self.config.get('event_handler'):
-            adapter=self.config['event_handler']
-            if not isinstance(adapter,dict) or set(adapter)-{'entrypoint','config'} or ':' not in adapter.get('entrypoint',''):raise ValueError('Invalid event adapter')
+        self.store=store;self.learning=Learning(store);self.config=validate_intelligence_config(config or {})
 
         self.stop=threading.Event();self.thread=None;self.last_error=None
         self.timeout=self.config.get('timeout',20)
-        if type(self.timeout) is not int or not 1<=self.timeout<=60:raise ValueError('Worker timeout must be 1..60')
         self.adapters={'consolidate':{'entrypoint':'personal_memory.adapters:extractive','config':{}},**self.config.get('adapters',{})}
-        for kind,value in self.adapters.items():
-            if kind not in {'consolidate','evaluate','procedure'} or not isinstance(value,dict) or set(value)-{'entrypoint','config'}:raise ValueError('Invalid operator adapter configuration')
-            required_text(value.get('entrypoint'),'entrypoint',300)
 
     def suite(self,*,key,cases,evidence_ids,actor):
         required_text(key,'key',200)

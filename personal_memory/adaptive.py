@@ -5,12 +5,18 @@ import math
 from .common import required_text
 from . import lifecycle
 
+def validate_recall_config(config=None):
+    """Pure operator-configuration check, reusable before any worker is started."""
+    config={} if config is None else config
+    if not isinstance(config,dict) or set(config)-{'planner','reranker'}:raise ValueError('Invalid recall configuration')
+    for adapter in config.values():
+        if not isinstance(adapter,dict) or not isinstance(adapter.get('entrypoint'),str) or ':' not in adapter['entrypoint'] or set(adapter)-{'entrypoint','config'}:raise ValueError('Invalid recall adapter')
+    return config
+
 class AdaptiveRecall:
     def __init__(self,store,backend,config=None):
-        self.store,self.backend,self.config=store,backend,config or {}
-        if not isinstance(self.config,dict) or set(self.config)-{'planner','reranker'}:raise ValueError('Invalid recall configuration')
-        for adapter in self.config.values():
-            if not isinstance(adapter,dict) or not isinstance(adapter.get('entrypoint'),str) or ':' not in adapter['entrypoint'] or set(adapter)-{'entrypoint','config'}:raise ValueError('Invalid recall adapter')
+        self.store,self.backend=store,backend
+        self.config=validate_recall_config(config or {})
 
     def search(self,query,subqueries=None,limit=12,max_calls=3,text_budget=16000,**filters):
         required_text(query,'query',4000)

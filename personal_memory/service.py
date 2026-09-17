@@ -38,6 +38,28 @@ class AccessDenied(PermissionError): pass
 
 class MemoryService:
     def __init__(self,data_dir,token,retrieval_config=None,backend=None,principals=None,extension_schemas=None,intelligence_config=None,source_config=None,source_adapters=()):
+        # Startup is transactional: closable resources are tracked in construction
+        # order and, if any later stage fails, unwound in reverse through the normal
+        # shutdown path, so a failed service never leaks the indexing lease or a
+        # worker against this data directory.
+        self._closables=[]
+        try:
+            self._construct(data_dir,token,retrieval_config=retrieval_config,backend=backend,principals=principals,
+                            extension_schemas=extension_schemas,intelligence_config=intelligence_config,
+                            source_config=source_config,source_adapters=source_adapters)
+        except BaseException:
+            self._release_failed_startup()
+            raise
+
+    def _release_failed_startup(self):
+        # The startup exception is the diagnosis; cleanup must never mask it.
+        # Individual close failures are logged but do not replace the cause.
+        try:
+            self.close()
+        except Exception as error:
+            LOG.warning("Startup cleanup failed for a resource: %s", error)
+
+    def _construct(self,data_dir,token,retrieval_config=None,backend=None,principals=None,extension_schemas=None,intelligence_config=None,source_config=None,source_adapters=()):
         if not isinstance(token,str) or len(token)<32: raise ValueError("Admin token must contain at least 32 characters")
         self.principals=[{"token":token,"role":"admin"}]+list(principals or [])
         seen=set()
@@ -56,20 +78,27 @@ class MemoryService:
         from .extensions import ExtensionRegistry
         self.extension_registry=ExtensionRegistry(extension_schemas)
         from .storage import database_path
+        from .adaptive import AdaptiveRecall, validate_recall_config
+        from .workflows import Workflows, validate_intelligence_config
+        # Operator configuration is validated before any worker or lease exists, so
+        # an invalid config cannot leave a half-started service holding ownership.
+        validate_intelligence_config(intelligence_config)
+        validate_recall_config((intelligence_config or {}).get("recall",{}))
         self.store=Store(database_path(data_dir,"memory"))
         # The service process is the sole owner of the durable indexing journals; a
         # second writer against the same data directory fails at startup.
         self.retrieval=load_backend(self.store,backend,retrieval_config,index_owner=True)
+        self._closables.append(self.retrieval)
         from .learning import Learning
-        from .adaptive import AdaptiveRecall
         self.learning=Learning(self.store)
         self.adaptive=AdaptiveRecall(self.store,self.retrieval,(intelligence_config or {}).get("recall",{}))
         from .intelligence import Intelligence
-        from .workflows import Workflows
         self.intelligence=Intelligence(self.store)
         from .investigate import Investigation
         self.investigation=Investigation(self.store,self.retrieval,self.intelligence)
+        self._closables.append(self.investigation)
         self.workflows=Workflows(self.store,intelligence_config)
+        self._closables.append(self.workflows)
         self.learning_routes={"/v1/learning/active":self.learning.active,"/v1/learning/outcome":self.learning.outcome,"/v1/learning/propose":self.learning.propose,
                               "/v1/learning/evaluate":self.learning.evaluate,"/v1/learning/promote":self.learning.promote,
                               "/v1/learning/retract":self.learning.retract}
@@ -130,6 +159,7 @@ class MemoryService:
             '/v1/quality':lambda a:{**self.intelligence.quality(),'workflows':self.workflows.status()}})
         from .source_runtime import SourceRuntime
         self.sources=SourceRuntime(self.store,data_dir,source_config,adapters=source_adapters)
+        self._closables.append(self.sources)
         self.routes.update({'/v1/sources/status':lambda a:self.sources.status(**a),
                             '/v1/sources/gmail/connect':lambda a:self.sources.connect_gmail(**a),
                             '/v1/sources/control':lambda a:self.sources.control(**a)})
@@ -386,7 +416,16 @@ class MemoryService:
                 "workflows":self.workflows.status(),"meaning":"Configured service is operational; this does not certify source completeness or retrieval quality."}
 
     def close(self):
-        self.sources.close()
-        self.workflows.close()
-        self.investigation.close()
-        if hasattr(self.retrieval,"close"):self.retrieval.close()
+        # Reverse construction order. Each resource keeps its own shutdown rules, so
+        # indexing ownership stays held until its writers have actually stopped, and
+        # one failing close never skips the remaining resources. Safe to call on a
+        # partially initialized service and safe to repeat.
+        errors=[]
+        while getattr(self,"_closables",None):
+            resource=self._closables.pop()
+            close_fn=getattr(resource,"close",None)
+            try:
+                if close_fn is not None: close_fn()
+            except Exception as error:
+                errors.append(error)
+        if errors: raise errors[0]

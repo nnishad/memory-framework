@@ -40,6 +40,13 @@ Use an encrypted local filesystem; SQLite, its WAL, the provider outbox and temp
 backup plaintext are not encrypted by this application. Do not use a network filesystem.
 Keep the database and outbox on reliable storage with free-space monitoring.
 
+Service startup is transactional for resource ownership: operator configuration is validated
+before the indexing lease or any worker exists, and if a later initialization stage fails, the
+already-created resources are closed in reverse order through the normal shutdown path (so
+indexing ownership stays held until its writers actually stop). The startup error itself is
+always preserved; after a failed start you can correct the configuration and restart in the
+same process against the same data directory.
+
 The production server binds loopback, uses one Uvicorn process, bounds HTTP concurrency
 and request bodies, rejects browser-origin requests and disables access logs. The
 reference `http.server` transport is for tests only. Do not expose either directly to
