@@ -180,8 +180,12 @@ Explicit supersession (`/v1/supersede`) and source-synchronization replacement r
 one transaction-aware retirement operation. Retiring evidence hides the record and its
 descendants from current recall while preserving them for historical inspection, and it
 cascades to every dependent artifact in the same transaction: awareness evidence, learning
-artifacts, curated entries and derived intelligence. A record is only "live and visible"
-when it is undeleted and not hidden; that single check gates creation of beliefs, learning
+artifacts, curated entries, identity links and derived intelligence. An account<->person
+identity link is retired with its supporting evidence: hidden or forgotten evidence cannot
+create or confirm a link, cannot block a corrected ownership claim, and cannot expand
+person-based recall; restoring the evidence's visibility never reconfirms the revoked
+identity. A record is only "live and visible" when it is undeleted and not hidden; that
+single check gates creation of beliefs, learning
 artifacts, snapshots, curated memory and consolidation results, so historical evidence can
 still be inspected but can never silently support a current conclusion. Progressive recall
 (`/v1/recall`) and parallel investigation (`/v1/investigate`) recheck that same predicate

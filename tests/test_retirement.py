@@ -15,7 +15,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from personal_memory import curated, reset
+from personal_memory import curated, lifecycle, reset
 from personal_memory.intelligence import Intelligence
 from personal_memory.learning import Learning
 from personal_memory.store import Store
@@ -199,7 +199,7 @@ class UpgradeMigrationTests(unittest.TestCase):
         self.assertEqual(Learning(reopened).browse(kind="outcome", state="recorded")["items"], [])
         self.assertEqual(Intelligence(reopened).beliefs(subject_id=subject)["beliefs"], [])
         self.assertEqual(curated.read(reopened)["stores"]["memory"]["entries"], [])
-        self.assertIn(("retirement_repair", 1), self._markers())
+        self.assertIn(lifecycle.REPAIR_MIGRATION, self._markers())
 
     def test_interrupted_migration_reruns_and_completes_on_restart(self):
         rid, subject, outcome = self._create_legacy_database()

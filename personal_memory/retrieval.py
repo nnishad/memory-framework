@@ -562,6 +562,7 @@ class Hybrid:
                     for edge in db.execute("SELECT DISTINCT entity_id FROM entity_links WHERE record_id=? LIMIT ?",(rid,self.graph_record_degree)):
                         owners=db.execute("""SELECT i.person_id FROM identity_edges i JOIN records evidence ON evidence.id=i.record_id
                           JOIN records seed ON seed.id=? WHERE i.account_id=? AND i.status='confirmed' AND evidence.deleted=0
+                          AND NOT EXISTS(SELECT 1 FROM record_visibility v WHERE v.record_id=i.record_id AND v.hidden=1)
                           AND (i.valid_from IS NULL OR seed.occurred_at>=i.valid_from)
                           AND (i.valid_to IS NULL OR seed.occurred_at<i.valid_to) LIMIT 2""",(rid,edge["entity_id"]))
                         for owner in owners:

@@ -2,6 +2,7 @@
 import json
 import re
 
+from . import lifecycle
 from .common import digest, now, required_text, timestamp
 
 
@@ -60,12 +61,19 @@ class Catalog:
                 raise ValueError("Unknown account")
             if not db.execute("SELECT 1 FROM entities WHERE id=? AND kind='person'", (person_id,)).fetchone():
                 raise ValueError("Unknown person; create a person entity first")
-            if not db.execute("SELECT 1 FROM records WHERE id=? AND deleted=0", (record_id,)).fetchone():
+            # Hidden (retired) or forgotten evidence cannot create or confirm a link;
+            # an identity is only as valid as the live evidence supporting it.
+            if not lifecycle.live_and_visible(db, record_id):
                 raise ValueError("Live identity evidence required")
             if status == "confirmed":
-                overlap = db.execute("""SELECT 1 FROM identity_edges WHERE account_id=? AND status='confirmed'
-                    AND person_id!=? AND (valid_to IS NULL OR ? IS NULL OR valid_to>?)
-                    AND (? IS NULL OR valid_from IS NULL OR valid_from<?)""",
+                # Only a conflict backed by currently live-and-visible evidence blocks
+                # the link; a retired support must not freeze ownership in place.
+                overlap = db.execute("""SELECT 1 FROM identity_edges i
+                    JOIN records evidence ON evidence.id=i.record_id AND evidence.deleted=0
+                    WHERE i.account_id=? AND i.status='confirmed' AND i.person_id!=?
+                    AND NOT EXISTS(SELECT 1 FROM record_visibility v WHERE v.record_id=i.record_id AND v.hidden=1)
+                    AND (i.valid_to IS NULL OR ? IS NULL OR i.valid_to>?)
+                    AND (? IS NULL OR i.valid_from IS NULL OR i.valid_from<?)""",
                     (account_id, person_id, start, start, end, end)).fetchone()
                 if overlap:
                     raise ValueError("Conflicting account ownership interval; resolve or revoke the earlier link")
@@ -89,6 +97,7 @@ class Catalog:
                 EXISTS(SELECT 1 FROM entity_links l WHERE l.record_id=r.id AND l.entity_id=?) OR
                 EXISTS(SELECT 1 FROM entity_links l JOIN identity_edges i ON i.account_id=l.entity_id
                   JOIN records evidence ON evidence.id=i.record_id AND evidence.deleted=0
+                  AND NOT EXISTS(SELECT 1 FROM record_visibility v WHERE v.record_id=i.record_id AND v.hidden=1)
                   WHERE l.record_id=r.id AND i.person_id=? AND i.status='confirmed'
                   AND (r.occurred_at!='' OR (i.valid_from IS NULL AND i.valid_to IS NULL))
                   AND (i.valid_from IS NULL OR r.occurred_at>=i.valid_from)
