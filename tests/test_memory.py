@@ -302,20 +302,33 @@ class UpstreamContractTests(HTTPFixture):
         provider.outbox.flush()
         self.assertEqual(self.client.call('/v1/status')["records"],4)
 
+    def await_prefetch(self, provider, query, present, wait=3):
+        """Poll the background-filled prefetch cache; return the first result in
+        the requested state (packet present, or suppressed to empty)."""
+        deadline = time.monotonic() + wait
+        result = ""
+        while time.monotonic() < deadline:
+            result = provider.prefetch(query)
+            if bool(result) == present:
+                return result
+            time.sleep(.02)
+        return result
+
+    def test_prefetch_first_result_carries_the_recalled_evidence(self):
+        self.client.call('/v1/ingest',{'items':[wire_record()]})
+        provider=self.provider()
+        result=self.await_prefetch(provider,'PostgreSQL',present=True)
+        # Inspect the first returned packet: envelope plus the record content.
+        self.assertIn("Untrusted personal",result)
+        self.assertIn("PostgreSQL",result)
+
     def test_prefetch_does_not_reinject_evidence_already_in_session(self):
         self.client.call('/v1/ingest',{'items':[wire_record()]})
         provider=self.provider()
-        result=provider.prefetch('PostgreSQL')
-        deadline=time.monotonic()+3
-        while time.monotonic()<deadline and "Untrusted personal" not in result:
-            time.sleep(.02);result=provider.prefetch('PostgreSQL')
-        self.assertIn("PostgreSQL",result)
-        # A cached backend result is reformatted against the now-retained prompt state.
-        result=provider.prefetch('PostgreSQL')
-        deadline=time.monotonic()+3
-        while time.monotonic()<deadline and result:
-            time.sleep(.02);result=provider.prefetch('PostgreSQL')
-        self.assertEqual(result,"")
+        self.await_prefetch(provider,'PostgreSQL',present=True)
+        # Duplicate suppression alone: the evidence is retained in the session,
+        # so the cached backend result is reformatted to nothing.
+        self.assertEqual(self.await_prefetch(provider,'PostgreSQL',present=False),"")
 
     def test_pre_compress_rehydrates_previously_suppressed_evidence(self):
         self.client.call('/v1/ingest',{'items':[wire_record()]})

@@ -1,3 +1,4 @@
+import contextlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,7 +87,10 @@ class LearningTests(unittest.TestCase):
         import sqlite3
         candidate=self.proposal();evaluation=self.evaluation(candidate);self.promote(candidate,evaluation)
         old=self.root/'old.db'
-        with self.store.connect() as src,sqlite3.connect(old) as dst:src.backup(dst)
+        # closing(): ``with conn`` commits but never closes; a lingering handle
+        # breaks the temporary-directory teardown on Windows.
+        with self.store.connect() as src, contextlib.closing(sqlite3.connect(old)) as dst:
+            src.backup(dst)
         self.call('retract',{'candidate_id':candidate['id']},'admin')
         from personal_memory.deletions import DeletionLedger
         DeletionLedger(self.root/'old.deletions.db').merge(self.store.deletions)

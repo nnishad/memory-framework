@@ -53,20 +53,24 @@ class CuratedMemoryTests(unittest.TestCase):
             service = MemoryService(
                 root, "a" * 40, principals=[{"token": "g" * 40, "role": "agent"},
                                              {"token": "r" * 40, "role": "reader"}])
-            self.addCleanup(service.close)
-            agent = service.authenticate("Bearer " + "g" * 40)
-            reader = service.authenticate("Bearer " + "r" * 40)
-            state = service.dispatch("/v1/curated/read", {}, reader)
-            result = service.dispatch("/v1/curated/apply", {
-                "target": "memory", "expected_version": 0, "request_id": "api-edit",
-                "operations": [{"action": "add", "content": "prefers tea"}],
-                "evidence_ids": [], "epoch": 0}, agent)
-            self.assertEqual(result["version"], 1)
-            with self.assertRaises(AccessDenied):
-                service.dispatch("/v1/curated/reset", {
-                    "scope": "memory", "expected_versions": {"memory": 1},
-                    "request_id": "reader-reset", "epoch": 0}, reader)
-            self.assertEqual(state["contract_version"], "1.0")
+            # Close before the with-block deletes the directory: addCleanup would
+            # run after, and Windows refuses to remove a live indexing lease.
+            try:
+                agent = service.authenticate("Bearer " + "g" * 40)
+                reader = service.authenticate("Bearer " + "r" * 40)
+                state = service.dispatch("/v1/curated/read", {}, reader)
+                result = service.dispatch("/v1/curated/apply", {
+                    "target": "memory", "expected_version": 0, "request_id": "api-edit",
+                    "operations": [{"action": "add", "content": "prefers tea"}],
+                    "evidence_ids": [], "epoch": 0}, agent)
+                self.assertEqual(result["version"], 1)
+                with self.assertRaises(AccessDenied):
+                    service.dispatch("/v1/curated/reset", {
+                        "scope": "memory", "expected_versions": {"memory": 1},
+                        "request_id": "reader-reset", "epoch": 0}, reader)
+                self.assertEqual(state["contract_version"], "1.0")
+            finally:
+                service.close()
 
 
 class _Client:

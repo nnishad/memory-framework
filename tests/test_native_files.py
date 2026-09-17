@@ -24,5 +24,10 @@ class NativeFilesTests(fixtures.HTTPFixture):
     def test_outside_symlink_rejected(self):
         home=Path(self.tmp.name)/'profile';path=home/'memories/MEMORY.md';path.parent.mkdir(parents=True)
         outside=Path(self.tmp.name)/'outside';outside.write_text('fictional')
-        path.symlink_to(outside)
+        try:
+            path.symlink_to(outside)
+        except OSError as error:
+            # Windows refuses unprivileged symlink creation (WinError 1314) unless
+            # developer mode is on: skip only for the missing privilege.
+            self.skipTest(f"symlink privilege unavailable: {error}")
         with self.assertRaises(ValueError):sync_files(home,self.client,kinds=('builtin_memory',))
