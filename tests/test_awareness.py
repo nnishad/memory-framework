@@ -5,8 +5,10 @@ asserted through a rebuilt Store, and every budget rule is checked against
 committed batch rows, not helper return values.
 """
 import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from personal_memory import awareness, changes
@@ -73,6 +75,22 @@ class AwarenessFixture(unittest.TestCase):
                 break
             done.append(awareness.complete(self.store, lease)["batch_id"])
         return done
+
+
+class DeliverySchemaMigrationTests(unittest.TestCase):
+    def test_existing_delivery_table_adds_urgent_without_losing_intents(self):
+        old_schema = awareness.SCHEMA.replace(
+            "attempts INTEGER NOT NULL DEFAULT 0, urgent INTEGER NOT NULL DEFAULT 0,\n  receipt",
+            "attempts INTEGER NOT NULL DEFAULT 0,\n  receipt")
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.executescript(old_schema)
+            db.execute("INSERT INTO awareness_deliveries(id,idempotency_key,consumer_id,profile,"
+                       "destination,batch_id,decision,state,created_at,updated_at)"
+                       " VALUES('old','key','bg','default','telegram:1','batch','background_prompt',"
+                       "'queued','time','time')")
+            awareness.ensure(db)
+            row = db.execute("SELECT id,urgent FROM awareness_deliveries").fetchone()
+        self.assertEqual(row, ("old", 0))
 
 
 class LeaseTests(AwarenessFixture):

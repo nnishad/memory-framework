@@ -51,9 +51,12 @@ disabled. It validates the structured result before completion. An invalid resul
 with a bounded retry. A process supervisor should restart the continuous worker;
 the lease fence prevents a crashed or superseded process from completing stale work.
 For a controlled single pass, omit `--continuous`. Omit `--deliver` to analyze
-without channel delivery. A notification proposal cannot grant source text authority:
-the destination and quiet-hours policy remain administrator configuration, and only
-the validated stored result is sent.
+without channel delivery. The consumer's `profile` must match the selected Hermes
+home (`default` or a named profile). Analysis and a proposed delivery intent commit
+together. Before sending, the worker rechecks current destination and quiet-hours
+policy; Hermes requires a positive message ID for the single configured recipient.
+A notification proposal cannot grant source text authority, and only the validated
+stored result is sent.
 
 ## 2. Current implementation and integration points
 

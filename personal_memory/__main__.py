@@ -107,9 +107,10 @@ def main(argv=None):
         args.credentials_file.chmod(0o600)
         result={'authorized':True,'credentials_file':str(args.credentials_file),'scope':'Gmail read-only'}
     elif args.command == 'awareness-run':
-        from .awareness_worker import process_once, hermes_analyze, deliver_once, hermes_deliver
+        from .awareness_worker import (process_once, hermes_analyze, deliver_once,
+                                       hermes_deliver, made_progress, ServiceRetrieval)
         from . import awareness
-        from .backend import load_backend
+        from .client import Client
         from .store import Store
         from .storage import database_path
         if not 5<=args.poll_seconds<=3600:raise ValueError('Poll interval must be 5..3600 seconds')
@@ -117,31 +118,52 @@ def main(argv=None):
         store=Store(database_path(cfg['data_dir'],'memory'))
         analyze=functools.partial(hermes_analyze, hermes_home=cfg['_hermes_home'])
         dispatch=functools.partial(hermes_deliver, hermes_home=cfg['_hermes_home'])
+        consumer=awareness.get_consumer(store,args.consumer_id)
+        if consumer['purpose']!='background':
+            raise ValueError('awareness-run requires a background consumer')
+        if args.deliver:
+            from hermes_cli.profiles import profile_matches_home
+            if not profile_matches_home(consumer['profile'],cfg['_hermes_home']):
+                raise ValueError('Awareness consumer profile does not match --hermes-home')
         retrieval=None
         def current_retrieval():
             nonlocal retrieval
             if retrieval is None:
-                retrieval=load_backend(store,config=cfg.get('retrieval'))
+                # Related-memory search runs against the running service: it is the sole
+                # owner of the semantic/Hindsight indexing journals.
+                retrieval=ServiceRetrieval(Client(cfg['url'],cfg['token'],timeout=30))
             return retrieval
-        if args.continuous:
-            import time
-            try:
-                while True:
-                    outcome=process_once(store,consumer_id=args.consumer_id,
-                                         analyze=analyze,retrieval=current_retrieval)
-                    if args.deliver:
-                        awareness.reconcile_deliveries(store)
-                        outcome['delivery']=deliver_once(store,dispatch=dispatch)
-                    if outcome['state']!='complete' and outcome.get('delivery',{}).get('state') == 'idle':
-                        time.sleep(args.poll_seconds)
-            except KeyboardInterrupt:
-                result={'state':'stopped'}
-        else:
-            result=process_once(store,consumer_id=args.consumer_id,analyze=analyze,
-                                retrieval=current_retrieval)
-            if args.deliver:
-                awareness.reconcile_deliveries(store)
-                result['delivery']=deliver_once(store,dispatch=dispatch)
+        try:
+            if args.continuous:
+                import time
+                try:
+                    while True:
+                        outcome=process_once(store,consumer_id=args.consumer_id,
+                                             analyze=analyze,retrieval=current_retrieval)
+                        if args.deliver:
+                            awareness.reconcile_deliveries(store)
+                            outcome['delivery']=deliver_once(
+                                store,consumer_id=args.consumer_id,profile=consumer['profile'],
+                                dispatch=dispatch)
+                        # Sleep only when neither analysis nor delivery advanced this tick:
+                        # idle, held, backoff and a disabled/absent delivery all rest.
+                        if not made_progress(outcome, outcome.get('delivery')):
+                            time.sleep(args.poll_seconds)
+                except KeyboardInterrupt:
+                    result={'state':'stopped'}
+            else:
+                result=process_once(store,consumer_id=args.consumer_id,analyze=analyze,
+                                    retrieval=current_retrieval)
+                if args.deliver:
+                    awareness.reconcile_deliveries(store)
+                    result['delivery']=deliver_once(
+                        store,consumer_id=args.consumer_id,profile=consumer['profile'],
+                        dispatch=dispatch)
+        finally:
+            # Normal exit and interruption release the worker's resources; the
+            # indexing journals were never this process's to hold.
+            if retrieval is not None:
+                retrieval.close()
     elif args.command in {'gmail-connect','sources-status','sources-control'}:
         cfg=settings(args.hermes_home)
         client=Client(cfg['url'],cfg['token'],timeout=120)

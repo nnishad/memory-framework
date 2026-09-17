@@ -10,6 +10,43 @@ import uuid
 from . import awareness
 
 
+class ServiceRetrieval:
+    """Related-memory search through the running memory service's /v1/search.
+
+    The worker never builds a local retrieval backend: the service is the sole
+    owner of the semantic and Hindsight indexing journals, so a second process
+    starting Hybrid would race it for the same durable index state.
+    """
+
+    def __init__(self, search):
+        self._search = search
+
+    def search(self, **query):
+        if callable(self._search):
+            return self._search("/v1/search", query)
+        return self._search.call("/v1/search", query)
+
+    def close(self):
+        client = None if callable(self._search) else self._search
+        closer = getattr(client, "close", None)
+        if callable(closer):
+            closer()
+
+
+def made_progress(analysis, delivery=None):
+    """Whether one worker tick advanced durable state and so should not sleep.
+
+    A completed analysis or a delivery whose state actually moved is progress. An
+    idle tick, held work, a retry scheduled for later, an ambiguous dispatch left
+    'attempted' for reconciliation, or the absence of a delivery attempt when
+    --deliver is off are all no-progress, so the loop sleeps instead of spinning.
+    """
+    if isinstance(analysis, dict) and analysis.get("state") == "complete":
+        return True
+    state = (delivery or {}).get("state") if isinstance(delivery, dict) else None
+    return state is not None and state not in ("idle", "attempted")
+
+
 def _batch_context(store, lease, retrieval=None):
     """Resolve visible originals and a bounded set of related canonical memories."""
     events = []
@@ -43,7 +80,9 @@ def _batch_context(store, lease, retrieval=None):
                 evidence.append({"record_id": record["id"], "text": excerpt,
                                  "truncated": len(record["text"]) > len(excerpt)})
     related = []
+    status = "not_configured"
     if retrieval is not None:
+        status = "complete"
         seen = {item["record_id"] for item in evidence}
         for item in evidence[:3]:
             query = item["text"][:160].strip()
@@ -58,11 +97,17 @@ def _batch_context(store, lease, retrieval=None):
                     seen.add(row["id"])
                     related.append({"record_id": row["id"], "text": row["text"][:700],
                                     "source": row["source"]})
+                if found.get("retrieval_status") == "retrieval_incomplete":
+                    status = "incomplete_retrieval"
             except Exception:
-                continue  # optional indexes must not block analysis of the originals
+                status = "incomplete_retrieval"
+                # An optional channel must not block analysis of the originals, but
+                # the packet records explicitly that related memory was unavailable.
+                continue
     return {"batch_id": lease["batch_id"], "decision": lease["decision"],
             "memory_epoch": lease["epoch"], "events": events,
             "evidence": evidence, "related_memories": related,
+            "related_memories_status": status,
             "partial_evidence": remaining <= 0}
 
 
@@ -90,17 +135,11 @@ def process_once(store, *, consumer_id, analyze, owner=None, retrieval=None):
         proposals = result.get("proposals", [])
         if not isinstance(citations, list) or not isinstance(proposals, list):
             raise ValueError("Awareness citations and proposals must be arrays")
-        completed = awareness.complete(store, lease, summary=summary,
-                                       citations=citations, proposals=proposals)
-        # The model may recommend a notification, but it never chooses a channel,
-        # recipient, urgency or message. Those remain administrator-owned consumer
-        # configuration and the validated stored result respectively.
-        if any(item.get("kind") == "notification" for item in proposals):
-            delivery = awareness.queue_delivery(
-                store, consumer_id=consumer_id, batch_id=lease["batch_id"],
-                group_key=lease["group_key"], group_version=lease["membership_digest"])
-            completed["delivery"] = delivery
-        return completed
+        # Completion stores the validated result and any recommended notification
+        # in one transaction. A crash cannot leave a completed batch without its
+        # durable intent.
+        return awareness.complete(store, lease, summary=summary,
+                                  citations=citations, proposals=proposals)
     except Exception as error:
         reason = type(error).__name__ + ": " + str(error)[:300]
         try:
@@ -173,18 +212,18 @@ def hermes_deliver(intent, content, *, hermes_home=None):
                                         home=hermes_home)
 
 
-def deliver_once(store, *, dispatch):
+def deliver_once(store, *, consumer_id, profile, dispatch):
     """Claim and send one durable intent; ambiguous failures deliberately stay attempted.
 
     A caller may run this independently from analysis. A receipt is persisted only
     when the dispatcher positively reports a completed channel delivery.
     """
-    intent = awareness.next_delivery(store)
+    intent = awareness.next_delivery(store, consumer_id=consumer_id, profile=profile)
     if intent is None:
         return {"state": "idle"}
     checked = awareness.revalidate_delivery(store, intent["id"])
-    if checked["state"] == "cancelled":
-        return {"state": "cancelled", "delivery_id": intent["id"]}
+    if checked["state"] != "attempted":
+        return {"state": checked["state"], "delivery_id": intent["id"]}
     try:
         content = _delivery_content(store, intent)
         receipt = dispatch(intent, content)

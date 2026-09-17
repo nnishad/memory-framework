@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS awareness_results(
 CREATE TABLE IF NOT EXISTS awareness_deliveries(
   id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, consumer_id TEXT NOT NULL,
   profile TEXT NOT NULL, destination TEXT, batch_id TEXT, decision TEXT NOT NULL,
-  state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, receipt TEXT, uncertainty TEXT,
+  state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, urgent INTEGER NOT NULL DEFAULT 0,
+  receipt TEXT, uncertainty TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS processing_readiness(
   record_id TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, detail TEXT,
@@ -73,6 +74,9 @@ def ensure(db):
     columns = {row[1] for row in db.execute("PRAGMA table_info(awareness_consumers)")}
     if "delivery" not in columns:  # additive migration for pre-delivery databases
         db.execute("ALTER TABLE awareness_consumers ADD COLUMN delivery TEXT NOT NULL DEFAULT '{}'")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(awareness_deliveries)")}
+    if "urgent" not in columns:
+        db.execute("ALTER TABLE awareness_deliveries ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0")
 
 
 def initialize(store):
@@ -219,6 +223,25 @@ def _epoch(db):
     return db.execute("SELECT value FROM memory_epoch WHERE id=1").fetchone()[0]
 
 
+# A source is stalled when it has connection rows but none of them are active
+# (L04). Shared by the sweep and the eligibility predicate below.
+_STALLED_SOURCES_SQL = ("SELECT source FROM source_connections GROUP BY source"
+                        " HAVING SUM(CASE WHEN state='active' THEN 1 ELSE 0 END)=0")
+
+
+def _claimable_sql():
+    """Single source of truth for batches a worker may act on right now.
+
+    Used by both the idle probe and claim so the two can never disagree: a due
+    retry, an expired lease awaiting reclaim, or held work whose paused source has
+    since resumed all qualify. Placeholders are (retry-stamp, lease-stamp) in that
+    order; the held branch's stalled-source subquery takes no parameter."""
+    return ("(state='pending'"
+            " OR (state='retry_wait' AND next_eligible_at<=?)"
+            " OR (state='leased' AND (lease_until IS NULL OR lease_until<=?))"
+            " OR (state='held' AND source NOT IN (" + _STALLED_SOURCES_SQL + ")))")
+
+
 def _invalid_batch_evidence(db, batch_id):
     """An analysis is valid only while every cited source revision remains visible."""
     return db.execute(
@@ -246,17 +269,20 @@ def invalidate_record(db, record_id):
 
 def pending(store, consumer_id):
     """Cheap scheduler probe: decide whether a run is worth initializing at all.
-    An idle check must never touch a model (B01)."""
+    An idle check must never touch a model (B01). Uses the same eligibility rule as
+    claim, so a restart never sleeps past a reclaimable expired lease or a batch
+    whose paused source has since resumed."""
     with store.connect() as db:
         consumer = _consumer_row(db, consumer_id)
         stamp = now()
+        epoch = _epoch(db)
         claimable = int(db.execute(
             "SELECT EXISTS(SELECT 1 FROM awareness_batches WHERE consumer_id=?"
-            " AND (state='pending' OR (state='retry_wait' AND next_eligible_at<=?)))",
-            (consumer_id, stamp)).fetchone()[0])
+            " AND memory_epoch=? AND " + _claimable_sql() + ")",
+            (consumer_id, epoch, stamp, stamp)).fetchone()[0])
         unscanned = int(db.execute(
             "SELECT EXISTS(SELECT 1 FROM memory_changes WHERE sequence>? AND memory_epoch=?)",
-            (consumer["cursor_seq"], _epoch(db))).fetchone()[0])
+            (consumer["cursor_seq"], epoch)).fetchone()[0])
     return {"pending": bool(claimable or unscanned or consumer["resync_required"]),
             "claimable": claimable, "unscanned": unscanned,
             "resync_required": consumer["resync_required"]}
@@ -306,9 +332,7 @@ def sweep(store, consumer_id):
         # stalled; its analysis waits instead of churning. Events that belong to
         # no connection row (engine-derived) are never held.
         stamp = now()
-        stalled = {row[0] for row in db.execute(
-            "SELECT source FROM source_connections GROUP BY source"
-            " HAVING SUM(CASE WHEN state='active' THEN 1 ELSE 0 END)=0")}
+        stalled = {row[0] for row in db.execute(_STALLED_SOURCES_SQL)}
         hold = consumer["policy"]["on_source_pause"] == "hold"
         if hold and stalled:
             db.execute("UPDATE awareness_batches SET state='held',lease_owner=NULL,lease_until=NULL,"
@@ -389,14 +413,19 @@ def claim(store, consumer_id, *, owner, ttl=300):
         db.execute("BEGIN IMMEDIATE")
         consumer = _consumer_row(db, consumer_id)
         stamp = now()
+        epoch = _epoch(db)
+        # Recovery uses the same eligibility as the probe: expired leases and held
+        # work whose paused source has resumed re-enter the claimable set here.
         db.execute("UPDATE awareness_batches SET state='pending',lease_owner=NULL,lease_until=NULL,"
-                   "updated_at=? WHERE consumer_id=? AND state='leased' AND (lease_until IS NULL"
-                   " OR lease_until<=?)", (stamp, consumer_id, stamp))
+                   "updated_at=? WHERE consumer_id=? AND memory_epoch=? AND state='leased' AND ("
+                   "lease_until IS NULL OR lease_until<=?)", (stamp, consumer_id, epoch, stamp))
+        db.execute("UPDATE awareness_batches SET state='pending',updated_at=? WHERE consumer_id=?"
+                   " AND memory_epoch=? AND state='held' AND source NOT IN ("
+                   + _STALLED_SOURCES_SQL + ")", (stamp, consumer_id, epoch))
         candidates = db.execute(
-            "SELECT * FROM awareness_batches WHERE consumer_id=?"
-            " AND (state='pending' OR (state='retry_wait' AND next_eligible_at<=?))"
-            " AND memory_epoch=? ORDER BY priority,seq_from",
-            (consumer_id, stamp, _epoch(db))).fetchall()
+            "SELECT * FROM awareness_batches WHERE consumer_id=? AND memory_epoch=?"
+            " AND " + _claimable_sql() + " ORDER BY priority,seq_from",
+            (consumer_id, epoch, stamp, stamp)).fetchall()
         if not candidates or not consumer["enabled"]:
             return None
         preferred = [row for row in candidates if row["source"] != consumer["last_source"]]
@@ -498,6 +527,11 @@ def complete(store, lease, *, summary=None, citations=(), proposals=()):
                        ("ares_" + digest([row["id"]])[:24], row["id"], row["consumer_id"], text,
                         json.dumps(list(citations)), json.dumps(list(proposals)),
                         row["memory_epoch"], stamp))
+        delivery = None
+        if text is not None and any(item["kind"] == "notification" for item in proposals):
+            consumer = _consumer_row(db, row["consumer_id"])
+            delivery = _queue_delivery_db(db, consumer, row, row["group_key"],
+                                          row["membership_digest"], urgent=False)
         db.execute("INSERT OR REPLACE INTO awareness_receipts(id,consumer_id,kind,subject,state,detail,"
                    "memory_epoch,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
                    ("arcpt_" + digest(["processed", row["id"]])[:24], row["consumer_id"], "processed",
@@ -506,7 +540,10 @@ def complete(store, lease, *, summary=None, citations=(), proposals=()):
         done = _advance_done(db, row["consumer_id"])
         db.execute("UPDATE awareness_consumers SET done_through=?,updated_at=? WHERE id=?",
                    (max(done, 0), stamp, row["consumer_id"]))
-        return {"batch_id": row["id"], "state": "complete", "done_through": max(done, 0)}
+        result = {"batch_id": row["id"], "state": "complete", "done_through": max(done, 0)}
+        if delivery is not None:
+            result["delivery"] = delivery
+        return result
 
 
 def defer(store, lease, *, reason, retry_in=60):
@@ -763,10 +800,39 @@ def _in_quiet(window, moment):
     return now_minutes >= start or now_minutes < end  # overnight window
 
 
+def _queue_delivery_db(db, consumer, batch, group_key, group_version, *, urgent):
+    """Create an intent inside the caller's transaction, including completion."""
+    if not isinstance(group_key, str) or not group_key:
+        raise ValueError("group_key must be a non-empty string")
+    if batch["memory_epoch"] != _epoch(db):
+        raise ValueError("Memory epoch changed after this batch was analysed")
+    delivery = consumer["delivery"]
+    if not delivery.get("enabled") or not delivery.get("destination"):
+        return {"state": "disabled", "delivery_id": None, "already": False}
+    key = digest(["deliver", consumer["profile"], delivery["destination"], batch["decision"],
+                  group_key, group_version or batch["membership_digest"]])
+    existing = db.execute("SELECT * FROM awareness_deliveries WHERE idempotency_key=?",
+                          (key,)).fetchone()
+    if existing is not None:
+        return {"state": existing["state"], "delivery_id": existing["id"], "already": True}
+    held = _in_quiet(delivery.get("quiet_hours"), _moment()) \
+        and not (urgent and delivery.get("urgent_bypass"))
+    state = "quiet_hold" if held else "queued"
+    delivery_id = "adel_" + key[:24]
+    stamp = now()
+    db.execute("INSERT INTO awareness_deliveries(id,idempotency_key,consumer_id,profile,destination,"
+               "batch_id,decision,state,attempts,urgent,receipt,uncertainty,created_at,updated_at)"
+               " VALUES(?,?,?,?,?,?,?,?,0,?,NULL,NULL,?,?)",
+               (delivery_id, key, consumer["id"], consumer["profile"], delivery["destination"],
+                batch["id"], batch["decision"], state, int(urgent), stamp, stamp))
+    return {"state": state, "delivery_id": delivery_id, "already": False}
+
+
 def queue_delivery(store, *, consumer_id, batch_id, group_key, group_version=None, urgent=False):
-    """Durable notification intent keyed by profile, destination, decision and analysed
-    group version. Coalesced at the profile level; disabled until configured (D01/D02)."""
+    """Durable profile-level intent for a completed analysis (D01/D02)."""
     required_text(group_key, "group_key", 500)
+    if not isinstance(urgent, bool):
+        raise ValueError("urgent must be boolean")
     with store.lock, store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         consumer = _consumer_row(db, consumer_id)
@@ -776,37 +842,30 @@ def queue_delivery(store, *, consumer_id, batch_id, group_key, group_version=Non
             raise ValueError("Unknown awareness batch for this consumer")
         if batch["state"] != "complete":
             raise ValueError("Only a completed analysis may intend a notification")
-        if batch["memory_epoch"] != _epoch(db):
-            raise ValueError("Memory epoch changed after this batch was analysed")
-        delivery = consumer["delivery"]
-        if not delivery.get("enabled") or not delivery.get("destination"):
-            return {"state": "disabled", "delivery_id": None, "already": False}
-        key = digest(["deliver", consumer["profile"], delivery["destination"], batch["decision"],
-                      group_key, group_version or batch["membership_digest"]])
-        existing = db.execute("SELECT * FROM awareness_deliveries WHERE idempotency_key=?",
-                              (key,)).fetchone()
-        if existing is not None:
-            return {"state": existing["state"], "delivery_id": existing["id"], "already": True}
-        held = _in_quiet(delivery.get("quiet_hours"), _moment()) \
-            and not (urgent and delivery.get("urgent_bypass"))
-        state = "quiet_hold" if held else "queued"
-        delivery_id = "adel_" + key[:24]
-        stamp = now()
-        db.execute("INSERT INTO awareness_deliveries(id,idempotency_key,consumer_id,profile,destination,"
-                   "batch_id,decision,state,attempts,receipt,uncertainty,created_at,updated_at)"
-                   " VALUES(?,?,?,?,?,?,?,?,0,NULL,NULL,?,?)",
-                   (delivery_id, key, consumer_id, consumer["profile"], delivery["destination"],
-                    batch_id, batch["decision"], state, stamp, stamp))
-    return {"state": state, "delivery_id": delivery_id, "already": False}
+        return _queue_delivery_db(db, consumer, batch, group_key, group_version, urgent=urgent)
 
 
-def next_delivery(store):
-    """Claim the oldest intent for a Hermes run. Claiming is not sending: the intent
-    stays durable and safely retryable until a receipt lands (D03)."""
+def next_delivery(store, *, consumer_id=None, profile=None):
+    """Claim one intent, optionally bound to a worker's consumer and profile.
+
+    The unscoped form remains available to existing administrative callers; a
+    channel worker must pass both scope fields before it can dispatch.
+    """
+    if (consumer_id is None) != (profile is None):
+        raise ValueError("consumer_id and profile must be supplied together")
     with store.lock, store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT * FROM awareness_deliveries WHERE state='queued'"
-                         " ORDER BY created_at,id LIMIT 1").fetchone()
+        if consumer_id is None:
+            row = db.execute("SELECT * FROM awareness_deliveries WHERE state='queued'"
+                             " ORDER BY created_at,id LIMIT 1").fetchone()
+        else:
+            consumer = _consumer_row(db, consumer_id)
+            if consumer["profile"] != profile or consumer["purpose"] != "background":
+                raise ValueError("Delivery worker does not match its background consumer profile")
+            row = db.execute(
+                "SELECT * FROM awareness_deliveries WHERE state='queued'"
+                " AND consumer_id=? AND profile=? ORDER BY created_at,id LIMIT 1",
+                (consumer_id, profile)).fetchone()
         if row is None:
             return None
         db.execute("UPDATE awareness_deliveries SET state='attempted',attempts=attempts+1,"
@@ -851,10 +910,19 @@ def reconcile_deliveries(store, *, stale_seconds=3600):
                        ("Attempted without a recorded receipt; resending requires an explicit "
                         "idempotency check against the channel", now(), delivery_id))
         released = 0
-        for row in db.execute("SELECT id,consumer_id FROM awareness_deliveries"
+        for row in db.execute("SELECT id,consumer_id,profile,destination,urgent FROM awareness_deliveries"
                               " WHERE state='quiet_hold'"):
             consumer = _consumer_row(db, row["consumer_id"])
-            if not _in_quiet(consumer["delivery"].get("quiet_hours"), _moment()):
+            delivery = consumer["delivery"]
+            if (not consumer["enabled"] or consumer["purpose"] != "background"
+                    or not delivery.get("enabled")
+                    or delivery.get("destination") != row["destination"]
+                    or consumer["profile"] != row["profile"]):
+                db.execute("UPDATE awareness_deliveries SET state='cancelled',uncertainty=?,"
+                           "updated_at=? WHERE id=?",
+                           ("Delivery policy or profile changed after queuing", now(), row["id"]))
+            elif (not _in_quiet(delivery.get("quiet_hours"), _moment())
+                  or (row["urgent"] and delivery.get("urgent_bypass"))):
                 db.execute("UPDATE awareness_deliveries SET state='queued',updated_at=? WHERE id=?",
                            (now(), row["id"]))
                 released += 1
@@ -862,8 +930,7 @@ def reconcile_deliveries(store, *, stale_seconds=3600):
 
 
 def revalidate_delivery(store, delivery_id):
-    """Recheck current evidence visibility before sending: a source deleted or
-    corrected while queued cancels rather than resurfaces stale content (D05)."""
+    """Recheck evidence and current owner delivery policy before sending."""
     with store.lock, store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT * FROM awareness_deliveries WHERE id=?",
@@ -881,6 +948,22 @@ def revalidate_delivery(store, delivery_id):
                        ("Source evidence was deleted or hidden after the intent was queued",
                         now(), delivery_id))
             return {"state": "cancelled", "changed": True}
+        consumer = _consumer_row(db, row["consumer_id"])
+        delivery = consumer["delivery"]
+        if (not consumer["enabled"] or consumer["purpose"] != "background"
+                or not delivery.get("enabled")
+                or delivery.get("destination") != row["destination"]
+                or consumer["profile"] != row["profile"]):
+            db.execute("UPDATE awareness_deliveries SET state='cancelled',uncertainty=?,updated_at=?"
+                       " WHERE id=?",
+                       ("Delivery policy or profile changed after queuing", now(), delivery_id))
+            return {"state": "cancelled", "changed": True}
+        if (_in_quiet(delivery.get("quiet_hours"), _moment())
+                and not (row["urgent"] and delivery.get("urgent_bypass"))):
+            if row["state"] != "quiet_hold":
+                db.execute("UPDATE awareness_deliveries SET state='quiet_hold',updated_at=?"
+                           " WHERE id=?", (now(), delivery_id))
+            return {"state": "quiet_hold", "changed": row["state"] != "quiet_hold"}
     return {"state": row["state"], "changed": False}
 
 
