@@ -154,6 +154,17 @@ interval; it does not run on every supervisor tick.
 Adapters such as Gmail, WhatsApp, or health data need no Hermes-specific code: they
 write through the same source-sync and change-journal contract.
 
-The background worker persists delivery intent but does not yet dispatch owner
-notifications through a Hermes channel. It also needs a live model trial on the
-deployment host before enabling it for real personal data.
+Add `--deliver` only after configuring a private Hermes `cron_recipients` destination:
+
+```sh
+personal-memory awareness-run --consumer-id hermes-background --continuous --deliver
+```
+
+The awareness model can recommend a notification but cannot select the recipient,
+urgency, or text. The worker stores an intent, revalidates cited source evidence,
+and invokes Hermes's recipient-scoped delivery bridge. Hermes records provenance for
+the exact stored summary before sending; memory confirms the intent only after Hermes
+returns positive channel-delivery evidence. Failed or ambiguous sends stay attempted
+and become `uncertain` during reconciliation, so they are never blindly resent.
+It still needs a live model and channel trial on the deployment host before enabling
+real personal notifications.

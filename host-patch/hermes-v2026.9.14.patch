@@ -359,6 +359,73 @@ index 0000000000..59270164e2
 +        raise PermissionError("Memory-bearing cron output cannot be delivered outside its recorded recipient scope")
 +
 +
++def dispatch_memory_notification(delivery_id, destination, content, *, home=None):
++    """Send one persisted memory-awareness notification through Hermes delivery.
++
++    This is deliberately a narrow host operation: callers supply an immutable
++    delivery intent and its already-validated text, while recipient resolution,
++    private-recipient admission, provenance and channel dispatch remain Hermes
++    responsibilities. A return value means the channel produced positive delivery
++    evidence; failures leave the caller's durable intent unresolved.
++    """
++    if not isinstance(delivery_id, str) or not delivery_id or len(delivery_id) > 200:
++        raise ValueError("delivery_id must be a non-empty bounded string")
++    if not isinstance(destination, str) or not destination or len(destination) > 500:
++        raise ValueError("destination must be a non-empty bounded string")
++    if not isinstance(content, str) or not content.strip() or len(content) > 60000:
++        raise ValueError("content must be non-empty and at most 60000 characters")
++
++    from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
++    selected_home = Path(home or get_hermes_home()).resolve()
++    token = set_hermes_home_override(selected_home)
++    provider = None
++    try:
++        import yaml
++        settings_path = selected_home / "config.yaml"
++        settings = yaml.safe_load(settings_path.read_text()) if settings_path.is_file() else {}
++        provider_name = ((settings or {}).get("memory") or {}).get("provider")
++        if not isinstance(provider_name, str) or not provider_name:
++            raise RuntimeError("No memory provider is configured for this Hermes profile")
++
++        # The delivery id is the Hermes execution identity as well as the
++        # memory-side idempotency key. It is never a regular scheduled job.
++        job = {"id": "memory-awareness-" + delivery_id, "name": "Memory awareness",
++               "deliver": destination, "execution_id": delivery_id,
++               "_memory_awareness_delivery": True}
++        from cron.scheduler_delivery import _resolve_delivery_targets, _deliver_result
++        targets = _resolve_delivery_targets(job)
++        if not targets:
++            raise ValueError("destination did not resolve to a Hermes delivery target")
++        context = cron_context(selected_home, job, delivery_id, targets, False)
++
++        from plugins.memory import load_memory_provider
++        provider = load_memory_provider(provider_name)
++        provider.initialize(
++            "memory-awareness:" + delivery_id, hermes_home=str(selected_home),
++            platform="cron", chat_type="", host_context=context,
++            host_memory_api=HOST_MEMORY_API,
++            host_memory_root=str(Path(__file__).resolve().parent.parent),
++        )
++        if getattr(provider, "access_allowed", None) is not True:
++            raise PermissionError("Memory delivery recipient scope was not authorized")
++        register = getattr(provider, "register_native_artifact", None)
++        if not callable(register):
++            raise RuntimeError("Configured memory provider cannot attest delivery content")
++        register(job["id"], content, "delivery")
++
++        error = _deliver_result(job, content)
++        if error:
++            raise RuntimeError(error)
++        if job.get("last_delivery_unverified"):
++            raise RuntimeError("Hermes channel acknowledged delivery without durable evidence")
++        return "hermes:" + delivery_id
++    finally:
++        shutdown = getattr(provider, "shutdown", None)
++        if callable(shutdown):
++            shutdown()
++        reset_hermes_home_override(token)
++
++
 +@dataclass(frozen=True)
 +class MemoryReadScope:
 +    home: str

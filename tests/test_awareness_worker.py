@@ -4,7 +4,7 @@ import types
 from unittest.mock import patch
 
 from personal_memory import awareness
-from personal_memory.awareness_worker import process_once, hermes_analyze
+from personal_memory.awareness_worker import process_once, hermes_analyze, deliver_once
 from tests.test_awareness import AwarenessFixture
 
 
@@ -57,6 +57,42 @@ class WorkerTests(AwarenessFixture):
                          "complete")
         self.assertEqual(len(seen), 1)
         self.assertEqual(awareness.pending(self.store, "bg")["pending"], False)
+
+    def test_notification_proposal_queues_then_confirms_only_after_dispatch_receipt(self):
+        self.arrive("m1", 1)
+        self.consumer("bg", "background")
+        awareness.configure_consumer(
+            self.store, id="bg", profile="owner", purpose="background",
+            delivery={"enabled": True, "destination": "telegram:owner"})
+        outcome = process_once(
+            self.store, consumer_id="bg",
+            analyze=lambda packet: {"summary": "A new important message.",
+                                    "citations": packet["events"][0]["record_ids"],
+                                    "proposals": [{"kind": "notification"}]})
+        self.assertEqual(outcome["delivery"]["state"], "queued")
+        calls = []
+        sent = deliver_once(self.store, dispatch=lambda intent, content:
+                            calls.append((intent, content)) or "hermes:receipt-1")
+        self.assertEqual(sent["state"], "confirmed")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("A new important message.", calls[0][1])
+        self.assertEqual(deliver_once(self.store, dispatch=lambda *_: self.fail("must not resend")),
+                         {"state": "idle"})
+
+    def test_failed_dispatch_stays_attempted_for_uncertainty_reconciliation(self):
+        self.arrive("m1", 1)
+        self.consumer("bg", "background")
+        awareness.configure_consumer(
+            self.store, id="bg", profile="owner", purpose="background",
+            delivery={"enabled": True, "destination": "telegram:owner"})
+        process_once(self.store, consumer_id="bg",
+                     analyze=lambda packet: {"summary": "A new important message.",
+                                             "citations": packet["events"][0]["record_ids"],
+                                             "proposals": [{"kind": "notification"}]})
+        result = deliver_once(self.store, dispatch=lambda *_: (_ for _ in ()).throw(RuntimeError("transport lost")))
+        self.assertEqual(result["state"], "attempted")
+        self.assertIn("transport lost", result["error"])
+        self.assertEqual(awareness.reconcile_deliveries(self.store, stale_seconds=0)["uncertain"], 1)
 
     def test_bad_agent_result_is_retryable_without_false_completion(self):
         self.arrive("m1", 1)

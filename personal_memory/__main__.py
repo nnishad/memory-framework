@@ -36,6 +36,8 @@ def main(argv=None):
             p.add_argument('--consumer-id',required=True)
             p.add_argument('--continuous',action='store_true',help='Poll for work and process batches continuously')
             p.add_argument('--poll-seconds',type=int,default=60)
+            p.add_argument('--deliver',action='store_true',
+                           help='Dispatch queued awareness notifications through the selected Hermes profile')
         elif name == "setup":
             p.add_argument("--port", type=int, default=8766)
             p.add_argument("--exclusive", action="store_true", help="Disable built-in memory files without deleting them")
@@ -105,7 +107,8 @@ def main(argv=None):
         args.credentials_file.chmod(0o600)
         result={'authorized':True,'credentials_file':str(args.credentials_file),'scope':'Gmail read-only'}
     elif args.command == 'awareness-run':
-        from .awareness_worker import process_once, hermes_analyze
+        from .awareness_worker import process_once, hermes_analyze, deliver_once, hermes_deliver
+        from . import awareness
         from .backend import load_backend
         from .store import Store
         from .storage import database_path
@@ -113,6 +116,7 @@ def main(argv=None):
         cfg=settings(args.hermes_home)
         store=Store(database_path(cfg['data_dir'],'memory'))
         analyze=functools.partial(hermes_analyze, hermes_home=cfg['_hermes_home'])
+        dispatch=functools.partial(hermes_deliver, hermes_home=cfg['_hermes_home'])
         retrieval=None
         def current_retrieval():
             nonlocal retrieval
@@ -125,12 +129,19 @@ def main(argv=None):
                 while True:
                     outcome=process_once(store,consumer_id=args.consumer_id,
                                          analyze=analyze,retrieval=current_retrieval)
-                    if outcome['state']!='complete':time.sleep(args.poll_seconds)
+                    if args.deliver:
+                        awareness.reconcile_deliveries(store)
+                        outcome['delivery']=deliver_once(store,dispatch=dispatch)
+                    if outcome['state']!='complete' and outcome.get('delivery',{}).get('state') == 'idle':
+                        time.sleep(args.poll_seconds)
             except KeyboardInterrupt:
                 result={'state':'stopped'}
         else:
             result=process_once(store,consumer_id=args.consumer_id,analyze=analyze,
                                 retrieval=current_retrieval)
+            if args.deliver:
+                awareness.reconcile_deliveries(store)
+                result['delivery']=deliver_once(store,dispatch=dispatch)
     elif args.command in {'gmail-connect','sources-status','sources-control'}:
         cfg=settings(args.hermes_home)
         client=Client(cfg['url'],cfg['token'],timeout=120)

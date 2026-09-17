@@ -2,8 +2,10 @@
 
 Status: core journal, consumers, foreground packet, Hermes request acknowledgment,
 and one-shot/continuous background runner are implemented but opt-in. The host has
-not yet been deployed from this workspace. Notification intent state is durable;
-channel dispatch is not wired into the background worker yet.
+not yet been deployed from this workspace. `awareness-run --deliver` dispatches a
+model-recommended, administrator-configured notification through Hermes after
+revalidating evidence and recording delivery provenance; ambiguous sends remain
+durably uncertain and are never retried blindly.
 Prepared: 2026-09-16. Target: the current memory framework and the cloned Hermes
 `v2026.9.14` integration. Deployment remains on the host running both services.
 
@@ -39,7 +41,7 @@ After an administrator enables the journal and configures a background consumer,
 run the worker on the same host as Hermes and the memory service:
 
 ```sh
-personal-memory awareness-run --consumer-id hermes-background --continuous --poll-seconds 60
+personal-memory awareness-run --consumer-id hermes-background --continuous --poll-seconds 60 --deliver
 ```
 
 The worker checks for pending work before constructing a model, claims one durable
@@ -48,8 +50,10 @@ retrieval backend, then runs the configured Hermes cron agent with action tools
 disabled. It validates the structured result before completion. An invalid result is deferred
 with a bounded retry. A process supervisor should restart the continuous worker;
 the lease fence prevents a crashed or superseded process from completing stale work.
-For a controlled single pass, omit `--continuous`. This worker does not send
-notifications or grant incoming source text authority to invoke tools.
+For a controlled single pass, omit `--continuous`. Omit `--deliver` to analyze
+without channel delivery. A notification proposal cannot grant source text authority:
+the destination and quiet-hours policy remain administrator configuration, and only
+the validated stored result is sent.
 
 ## 2. Current implementation and integration points
 

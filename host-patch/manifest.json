@@ -24,7 +24,7 @@
     },
     "agent/memory_bridge.py": {
       "before": null,
-      "after": "d8cd3e15914620bb31d5d9c3db16338cddcb87c5e8f79634e882c62a7d936acb"
+      "after": "d5437568d817bb341a52d885f2bd37395295ab96d275c396217ff6afd31c910e"
     },
     "agent/memory_manager.py": {
       "before": "bd688b6ceecaf63e737516d9a65d2e0db3c3a8c12d5d7ede26c415b609a2898a",
@@ -131,7 +131,7 @@
       "after": "66822fd793e31cfabb234c7f18ecc675444fb0bbe47525ca42c95081f27b9c6d"
     }
   },
-  "patch_sha256": "87a45f73f214f8901023c6c272bdd03dcc3708a0fba3b15dc2c05f87bb2ba6c5",
+  "patch_sha256": "54e70a0127eed1eab68bc4ba13d8335148fdba35e7a673a03c0b8d9b2fcb4e62",
   "host_memory_api": 2,
   "native_store_contract": 1,
   "framework_version": "0.8.0rc8"

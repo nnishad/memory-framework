@@ -90,8 +90,17 @@ def process_once(store, *, consumer_id, analyze, owner=None, retrieval=None):
         proposals = result.get("proposals", [])
         if not isinstance(citations, list) or not isinstance(proposals, list):
             raise ValueError("Awareness citations and proposals must be arrays")
-        return awareness.complete(store, lease, summary=summary,
-                                  citations=citations, proposals=proposals)
+        completed = awareness.complete(store, lease, summary=summary,
+                                       citations=citations, proposals=proposals)
+        # The model may recommend a notification, but it never chooses a channel,
+        # recipient, urgency or message. Those remain administrator-owned consumer
+        # configuration and the validated stored result respectively.
+        if any(item.get("kind") == "notification" for item in proposals):
+            delivery = awareness.queue_delivery(
+                store, consumer_id=consumer_id, batch_id=lease["batch_id"],
+                group_key=lease["group_key"], group_version=lease["membership_digest"])
+            completed["delivery"] = delivery
+        return completed
     except Exception as error:
         reason = type(error).__name__ + ": " + str(error)[:300]
         try:
@@ -138,3 +147,54 @@ def hermes_analyze(packet, *, hermes_home=None):
     if response.startswith("```") and response.endswith("```"):
         response = response.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return json.loads(response)
+
+
+def _delivery_content(store, intent):
+    """Return only the durable, validated result associated with an attempted intent."""
+    with store.connect() as db:
+        row = db.execute(
+            "SELECT result.summary,result.citations FROM awareness_deliveries delivery "
+            "JOIN awareness_results result ON result.batch_id=delivery.batch_id "
+            "WHERE delivery.id=? AND delivery.state='attempted' "
+            "AND result.memory_epoch=(SELECT value FROM memory_epoch WHERE id=1)",
+            (intent["id"],)).fetchone()
+    if row is None:
+        raise ValueError("Attempted delivery has no live awareness result")
+    citations = json.loads(row["citations"])
+    evidence = ", ".join(str(item) for item in citations[:12])
+    return "Memory update:\n\n" + row["summary"].strip() + (
+        "\n\nEvidence: " + evidence if evidence else "")
+
+
+def hermes_deliver(intent, content, *, hermes_home=None):
+    """Dispatch through Hermes's recipient-scoped, provenance-checked host bridge."""
+    from agent.memory_bridge import dispatch_memory_notification
+    return dispatch_memory_notification(intent["id"], intent["destination"], content,
+                                        home=hermes_home)
+
+
+def deliver_once(store, *, dispatch):
+    """Claim and send one durable intent; ambiguous failures deliberately stay attempted.
+
+    A caller may run this independently from analysis. A receipt is persisted only
+    when the dispatcher positively reports a completed channel delivery.
+    """
+    intent = awareness.next_delivery(store)
+    if intent is None:
+        return {"state": "idle"}
+    checked = awareness.revalidate_delivery(store, intent["id"])
+    if checked["state"] == "cancelled":
+        return {"state": "cancelled", "delivery_id": intent["id"]}
+    try:
+        content = _delivery_content(store, intent)
+        receipt = dispatch(intent, content)
+        if not isinstance(receipt, str) or not receipt.strip():
+            raise RuntimeError("Hermes delivery returned no receipt")
+        confirmed = awareness.confirm_delivery(store, intent["id"], receipt=receipt)
+        return {"state": confirmed["state"], "delivery_id": intent["id"],
+                "receipt": receipt}
+    except Exception as error:
+        # Do not turn a send failure into a retry: the reconciliation path records
+        # it as uncertain, preventing a duplicate after an ambiguous transport loss.
+        return {"state": "attempted", "delivery_id": intent["id"],
+                "error": type(error).__name__ + ": " + str(error)[:300]}
