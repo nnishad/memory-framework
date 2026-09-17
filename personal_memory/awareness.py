@@ -229,17 +229,26 @@ _STALLED_SOURCES_SQL = ("SELECT source FROM source_connections GROUP BY source"
                         " HAVING SUM(CASE WHEN state='active' THEN 1 ELSE 0 END)=0")
 
 
-def _claimable_sql():
+def _stalled_source_sql():
+    return "source NOT IN (" + _STALLED_SOURCES_SQL + ")"
+
+
+def _claimable_sql(hold=True):
     """Single source of truth for batches a worker may act on right now.
 
     Used by both the idle probe and claim so the two can never disagree: a due
     retry, an expired lease awaiting reclaim, or held work whose paused source has
-    since resumed all qualify. Placeholders are (retry-stamp, lease-stamp) in that
-    order; the held branch's stalled-source subquery takes no parameter."""
-    return ("(state='pending'"
-            " OR (state='retry_wait' AND next_eligible_at<=?)"
-            " OR (state='leased' AND (lease_until IS NULL OR lease_until<=?))"
-            " OR (state='held' AND source NOT IN (" + _STALLED_SOURCES_SQL + ")))")
+    since resumed all qualify. Under a hold policy every eligible state applies
+    the same stalled-source rule, so neither due retries nor expired leases from
+    paused sources are presented as claimable. Placeholders are
+    (retry-stamp, lease-stamp) in that order; the stalled-source subqueries take no
+    parameter."""
+    eligible = ("(state='pending' OR (state='retry_wait' AND next_eligible_at<=?)"
+                " OR (state='leased' AND (lease_until IS NULL OR lease_until<=?))"
+                " OR state='held')")
+    # Apply the pause policy to every eligible state without changing retry
+    # deadlines: resuming a source must not bypass a retry's backoff.
+    return "(" + eligible + " AND " + _stalled_source_sql() + ")" if hold else eligible
 
 
 def _invalid_batch_evidence(db, batch_id):
@@ -276,9 +285,10 @@ def pending(store, consumer_id):
         consumer = _consumer_row(db, consumer_id)
         stamp = now()
         epoch = _epoch(db)
+        hold = consumer["policy"]["on_source_pause"] == "hold"
         claimable = int(db.execute(
             "SELECT EXISTS(SELECT 1 FROM awareness_batches WHERE consumer_id=?"
-            " AND memory_epoch=? AND " + _claimable_sql() + ")",
+            " AND memory_epoch=? AND " + _claimable_sql(hold) + ")",
             (consumer_id, epoch, stamp, stamp)).fetchone()[0])
         unscanned = int(db.execute(
             "SELECT EXISTS(SELECT 1 FROM memory_changes WHERE sequence>? AND memory_epoch=?)",
@@ -339,11 +349,14 @@ def sweep(store, consumer_id):
                        "updated_at=? WHERE consumer_id=? AND state='pending' AND source IN ({})"
                        .format(",".join("?" * len(stalled))),
                        (stamp, consumer_id, *sorted(stalled)))
+        # The same eligibility as claim: a process-policy consumer resumes every
+        # held batch; a hold-policy consumer resumes only un-stalled sources.
         resume = db.execute("SELECT id,source FROM awareness_batches WHERE consumer_id=?"
                             " AND state='held'", (consumer_id,)).fetchall()
         if resume:
             db.executemany("UPDATE awareness_batches SET state='pending',updated_at=? WHERE id=?",
-                           [(stamp, row["id"]) for row in resume if row["source"] not in stalled])
+                           [(stamp, row["id"]) for row in resume
+                            if not hold or row["source"] not in stalled])
         created = 0
         current, chars = [], 0
 
@@ -414,17 +427,38 @@ def claim(store, consumer_id, *, owner, ttl=300):
         consumer = _consumer_row(db, consumer_id)
         stamp = now()
         epoch = _epoch(db)
-        # Recovery uses the same eligibility as the probe: expired leases and held
-        # work whose paused source has resumed re-enter the claimable set here.
+        hold = consumer["policy"]["on_source_pause"] == "hold"
+        # Recovery applies the consumer's pause policy inside this transaction:
+        # a lease that expired while its source is paused parks as held when the
+        # policy requires holding, so no new worker starts a model call on it;
+        # every other expired lease re-enters pending. Held work whose paused
+        # source has since resumed also returns to the claimable set.
+        if hold:
+            # A source paused between sweeps is caught here as well: pending work
+            # for a stalled source parks as held before any lease is granted, and
+            # the source state is read inside this same transaction.
+            db.execute("UPDATE awareness_batches SET state='held',lease_owner=NULL,lease_until=NULL,"
+                       "updated_at=? WHERE consumer_id=? AND memory_epoch=? AND state='pending'"
+                       " AND source IN (" + _STALLED_SOURCES_SQL + ")", (stamp, consumer_id, epoch))
+            db.execute("UPDATE awareness_batches SET state='held',lease_owner=NULL,lease_until=NULL,"
+                       "updated_at=? WHERE consumer_id=? AND memory_epoch=? AND state='leased' AND ("
+                       "lease_until IS NULL OR lease_until<=?) AND source IN ("
+                       + _STALLED_SOURCES_SQL + ")", (stamp, consumer_id, epoch, stamp))
         db.execute("UPDATE awareness_batches SET state='pending',lease_owner=NULL,lease_until=NULL,"
                    "updated_at=? WHERE consumer_id=? AND memory_epoch=? AND state='leased' AND ("
                    "lease_until IS NULL OR lease_until<=?)", (stamp, consumer_id, epoch, stamp))
-        db.execute("UPDATE awareness_batches SET state='pending',updated_at=? WHERE consumer_id=?"
-                   " AND memory_epoch=? AND state='held' AND source NOT IN ("
-                   + _STALLED_SOURCES_SQL + ")", (stamp, consumer_id, epoch))
+        if hold:
+            held_resume = ("UPDATE awareness_batches SET state='pending',updated_at=?"
+                           " WHERE consumer_id=? AND memory_epoch=? AND state='held' AND"
+                           " source NOT IN (" + _STALLED_SOURCES_SQL + ")")
+        else:
+            # A process-policy consumer never parks work: anything held is eligible.
+            held_resume = ("UPDATE awareness_batches SET state='pending',updated_at=?"
+                           " WHERE consumer_id=? AND memory_epoch=? AND state='held'")
+        db.execute(held_resume, (stamp, consumer_id, epoch))
         candidates = db.execute(
             "SELECT * FROM awareness_batches WHERE consumer_id=? AND memory_epoch=?"
-            " AND " + _claimable_sql() + " ORDER BY priority,seq_from",
+            " AND " + _claimable_sql(hold) + " ORDER BY priority,seq_from",
             (consumer_id, epoch, stamp, stamp)).fetchall()
         if not candidates or not consumer["enabled"]:
             return None

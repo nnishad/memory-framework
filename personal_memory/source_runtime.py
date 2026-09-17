@@ -105,50 +105,65 @@ class SourceRuntime:
             self.start()
         return result
 
-    def _schedule(self, cid, role, delay, error=None):
+    def _schedule(self, cid, role, delay, error=None, config_key=None):
         with self.store.lock,self.store.connect() as db:
             if error:
                 import random
                 previous=db.execute('SELECT failures FROM source_schedule WHERE connection_id=? AND role=?',(cid,role)).fetchone()
                 delay=max(delay,min(3600,30*2**min(previous[0] if previous else 0,7)))+random.uniform(0,5)
-            db.execute('INSERT INTO source_schedule VALUES(?,?,?,?,?) ON CONFLICT(connection_id,role) DO UPDATE SET next_at=excluded.next_at,failures=CASE WHEN excluded.error IS NULL THEN 0 ELSE source_schedule.failures+1 END,error=excluded.error',
-                       (cid,role,time.time()+delay,1 if error else 0,error))
+            db.execute('INSERT INTO source_schedule(connection_id,role,next_at,failures,error,config_key)'
+                       ' VALUES(?,?,?,?,?,?) ON CONFLICT(connection_id,role) DO UPDATE SET'
+                       ' next_at=excluded.next_at,failures=CASE WHEN excluded.error IS NULL THEN 0 ELSE source_schedule.failures+1 END,'
+                       'error=excluded.error,config_key=excluded.config_key',
+                       (cid,role,time.time()+delay,1 if error else 0,error,config_key))
 
     def _due(self,cid,role):
         with self.store.connect() as db:
             row=db.execute('SELECT next_at FROM source_schedule WHERE connection_id=? AND role=?',(cid,role)).fetchone()
         return not row or row[0]<=time.time()
 
+    def _schedule_row(self,cid,role):
+        with self.store.connect() as db:
+            return db.execute('SELECT next_at,config_key FROM source_schedule WHERE connection_id=? AND role=?',(cid,role)).fetchone()
+
     def _declarations(self, cid, connection, adapter):
         """Resolve validated adapter declarations exactly once per refresh interval.
 
-        Honors a persisted backoff even when nothing is cached, invalidates the cache
-        when the connection configuration or credentials change (generation,
-        scope hash or secret reference), and treats a discovery auth failure like a
-        read failure by parking the connection.
+        The discovery deadline is interpreted against the configuration fingerprint
+        that produced it: a configuration change forces exactly one immediate refresh,
+        and if that refresh fails, the resulting retry deadline belongs to the new
+        fingerprint, so subsequent ticks honor it instead of hammering the adapter.
+        Declarations cached under a previous fingerprint are discarded, and the
+        binding survives restarts because it is persisted with the schedule row.
+        A discovery auth failure parks the connection like a read failure.
         """
         fingerprint=(connection.get('generation'),connection.get('scope_hash'),connection.get('secret_ref'))
-        cached=self.discovered.get(cid)
-        if not self._due(cid,'discovery'):
-            if cached is None:return None                 # honor a persisted backoff
-            if cached[0]==fingerprint:return cached[1]     # valid cache, not yet due
-            # A changed configuration or credential rotates the fingerprint and must
-            # force a refresh even while the previous discovery interval still holds.
+        config_key=digest(list(fingerprint))
+        row=self._schedule_row(cid,'discovery')
+        # A deadline recorded under a different fingerprint is stale: the current
+        # configuration has not been resolved yet, so it is due immediately.
+        due=row is None or row[0]<=time.time() or row[1]!=config_key
+        if not due:
+            cached=self.discovered.get(cid)
+            if cached is not None and cached[0]==fingerprint:
+                return cached[1]                 # valid cache for this configuration
+            return None                          # honor this configuration's persisted deadline
+        self.discovered.pop(cid,None)            # discard declarations of a superseded config
         try:
             streams=adapter.discover(self.sync.context(connection))
         except AdapterError as error:
             if error.kind=='auth':self.sync._set_state(cid,'needs_auth')
-            self._schedule(cid,'discovery',60,error.message)
+            self._schedule(cid,'discovery',60,error.message,config_key=config_key)
             return None
         except Exception as error:
-            self._schedule(cid,'discovery',60,type(error).__name__+': source discovery failed')
+            self._schedule(cid,'discovery',60,type(error).__name__+': source discovery failed',config_key=config_key)
             return None
         self.discovered[cid]=(fingerprint,streams)
         # Discovery may contact an upstream service for dynamic streams or
         # partitions. Keep it independent from the one-second supervisor loop and
         # refresh it at the connection's normal poll cadence.
         discovery_delay=min(max(int(connection['scope'].get('poll_seconds',300)),60),3600)
-        self._schedule(cid,'discovery',discovery_delay)
+        self._schedule(cid,'discovery',discovery_delay,config_key=config_key)
         return streams
 
     def _recover_cursor(self,cid):

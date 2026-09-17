@@ -85,6 +85,10 @@ class Store(Catalog):
             db.executescript(CURATED_SCHEMA)
             from .source_sync import SCHEMA as SOURCE_SYNC_SCHEMA
             db.executescript(SOURCE_SYNC_SCHEMA)
+            # Discovery retry state is interpreted against the configuration that
+            # produced it; older databases only carried the deadline.
+            if "config_key" not in {r[1] for r in db.execute("PRAGMA table_info(source_schedule)")}:
+                db.execute("ALTER TABLE source_schedule ADD COLUMN config_key TEXT")
             from . import changes
             changes.ensure(db)
             from . import awareness
@@ -124,6 +128,11 @@ class Store(Catalog):
                 cursor = rows[-1]['id']
         from .reset import initialize as initialize_reset
         initialize_reset(self)
+        # Repair derived memory left stale by pre-unification retirement before
+        # any background worker or recall request can observe it. The versioned
+        # marker makes this a one-time, restartable migration per database.
+        from . import lifecycle
+        lifecycle.apply_upgrade(self)
 
     @contextmanager
     def connect(self):

@@ -5,11 +5,17 @@ dependent artifact (awareness results, learning objects and curated entries) so
 that no path can retire evidence while silently leaving stale conclusions
 current. A single "live and visible" predicate governs the creation of new
 derived memory, and an idempotent repair pass cleans up artifacts that were made
-stale before retirement was unified.
+stale before retirement was unified. The repair runs as a versioned startup
+migration so an upgraded database is safe before any worker or recall request
+starts, without rescanning the archive on every open.
 
 Every function here operates inside the caller's SQLite transaction; none of
-them open a connection of their own except the top-level repair pass.
+them open a connection of their own except the top-level repair passes.
 """
+from .common import now
+
+# Bump the version when a new archive-wide repair must run once per database.
+REPAIR_MIGRATION = ("retirement_repair", 1)
 
 
 def _descendants(db, root):
@@ -61,34 +67,61 @@ def repair_retired_dependencies(store):
     and invalidates them. Restoring source visibility later never reactivates a
     conclusion, so a subsequent pass finds nothing to do. Returns counts by kind.
     """
+    with store.lock, store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        return _repair(db, store)
+
+
+def apply_upgrade(store):
+    """Run the archive repair once per database, recorded by a versioned marker.
+
+    Called from Store initialization after schema setup and deletion recovery,
+    so an upgraded database never serves stale derived memory. The repair and
+    its marker share one transaction: an interrupted pass rolls back and simply
+    reruns on the next open, while a completed marker keeps later opens cheap.
+    """
+    name, version = REPAIR_MIGRATION
+    with store.lock, store.connect() as db:
+        db.execute("CREATE TABLE IF NOT EXISTS memory_migrations"
+                   "(name TEXT NOT NULL, version INTEGER NOT NULL, applied_at TEXT NOT NULL,"
+                   " PRIMARY KEY(name,version))")
+        if db.execute("SELECT 1 FROM memory_migrations WHERE name=? AND version=?", (name, version)).fetchone():
+            return {"applied": False, "learning": 0, "curated": 0}
+        db.execute("BEGIN IMMEDIATE")
+        report = _repair(db, store)
+        db.execute("INSERT OR IGNORE INTO memory_migrations VALUES(?,?,?)", (name, version, now()))
+    report["applied"] = True
+    return report
+
+
+def _repair(db, store):
+    # Body of the repair; runs inside the caller's transaction.
     from .learning import invalidate as invalidate_learning
     from .curated import invalidate as invalidate_curated
     report = {"learning": 0, "curated": 0}
-    with store.lock, store.connect() as db:
-        db.execute("BEGIN IMMEDIATE")
-        retired = {r[0] for r in db.execute(
-            "SELECT id FROM records WHERE deleted=1"
-            " UNION SELECT record_id FROM record_visibility WHERE hidden=1")}
-        if retired:
-            learning_seeds = set()
-            for rid in retired:
-                for row in db.execute(
-                        "SELECT o.id FROM learning_objects o JOIN learning_evidence e ON e.object_id=o.id"
-                        " WHERE e.record_id=? AND o.state IN ('active','recorded','candidate')", (rid,)):
-                    learning_seeds.add(row[0])
-            if learning_seeds:
-                invalidate_learning(db, objects=sorted(learning_seeds))
-                report["learning"] = len(learning_seeds)
-            offending = set()
-            for rid in retired:
-                if db.execute(
-                        "SELECT 1 FROM curated_entries WHERE retired_version IS NULL"
-                        " AND EXISTS(SELECT 1 FROM json_each(curated_entries.evidence_ids) WHERE value=?)",
-                        (rid,)).fetchone():
-                    offending.add(rid)
-            for rid in sorted(offending):
-                invalidate_curated(db, store, rid)
-                report["curated"] += 1
-            if report["learning"] or report["curated"]:
-                store.audit(db, "retirement_repair", "lifecycle", dict(report))
+    retired = {r[0] for r in db.execute(
+        "SELECT id FROM records WHERE deleted=1"
+        " UNION SELECT record_id FROM record_visibility WHERE hidden=1")}
+    if retired:
+        learning_seeds = set()
+        for rid in retired:
+            for row in db.execute(
+                    "SELECT o.id FROM learning_objects o JOIN learning_evidence e ON e.object_id=o.id"
+                    " WHERE e.record_id=? AND o.state IN ('active','recorded','candidate')", (rid,)):
+                learning_seeds.add(row[0])
+        if learning_seeds:
+            invalidate_learning(db, objects=sorted(learning_seeds))
+            report["learning"] = len(learning_seeds)
+        offending = set()
+        for rid in retired:
+            if db.execute(
+                    "SELECT 1 FROM curated_entries WHERE retired_version IS NULL"
+                    " AND EXISTS(SELECT 1 FROM json_each(curated_entries.evidence_ids) WHERE value=?)",
+                    (rid,)).fetchone():
+                offending.add(rid)
+        for rid in sorted(offending):
+            invalidate_curated(db, store, rid)
+            report["curated"] += 1
+        if report["learning"] or report["curated"]:
+            store.audit(db, "retirement_repair", "lifecycle", dict(report))
     return report

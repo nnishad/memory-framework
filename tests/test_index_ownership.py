@@ -90,13 +90,151 @@ class IndexOwnershipTests(unittest.TestCase):
 
     def test_only_one_process_can_own_the_indexing_journals(self):
         store = Store(self.root / "memory.db")
-        owner = load_backend(store, config={}, index_owner=True)
+        # Normal indexing startup acquires ownership automatically; no opt-in flag.
+        owner = load_backend(store, config={})
         self.addCleanup(owner.close)
+        # Two default backends targeting one database: the second writer is rejected.
         with self.assertRaises(RuntimeError):
-            load_backend(store, config={}, index_owner=True)
-        # An ownership-optional local read stays possible: only writers contend.
-        reader = load_backend(store, config={})
+            load_backend(store, config={})
+        # An explicit non-indexing mode stays available for local inspection.
+        reader = load_backend(store, config={}, index_owner=False)
         self.addCleanup(reader.close)
+        # Ownership is released once the owner's workers stop.
+        owner.close()
+        restarted = load_backend(store, config={})
+        self.addCleanup(restarted.close)
+
+    def test_non_indexing_backend_starts_no_background_indexing_including_first_search(self):
+        import os
+        store = Store(self.root / "memory.db")
+        store.ingest([record("m1", "quarterly budget review meeting notes")])
+        started = []
+        syncs = []
+
+        class FakeSemantic:
+            def __init__(self, *args, **kwargs): pass
+            def candidates(self, *args, **kwargs): return []
+            def status(self): return {"enabled": True, "ready": True}
+            def sync(self, *args, **kwargs): syncs.append(1)
+
+        saved = os.environ.pop("PERSONAL_MEMORY_DISABLE_SEMANTIC", None)
+        self.addCleanup(os.environ.__setitem__, "PERSONAL_MEMORY_DISABLE_SEMANTIC", saved)
+        with patch.object(Hybrid, "_start_index_thread", lambda self, engine: started.append(engine)), \
+             patch("personal_memory.semantic.SemanticIndex", FakeSemantic):
+            reader = load_backend(store, config={"rerank": {"enabled": False}}, index_owner=False)
+            self.addCleanup(reader.close)
+            self.assertIn("episodes", reader.search("budget review"))
+        self.assertEqual(started, [], "non-indexing mode must not start eager or lazy indexing workers")
+        self.assertEqual(syncs, [])
+        self.assertIsNone(reader.index_lease)
+        # The journal remains free for the real owner.
+        owner = load_backend(store, config={})
+        self.addCleanup(owner.close)
+
+    def test_indexing_backend_starts_lazy_semantic_under_ownership(self):
+        import os
+        store = Store(self.root / "memory.db")
+        store.ingest([record("m1", "quarterly budget review meeting notes")])
+        started = []
+
+        class FakeSemantic:
+            def __init__(self, *args, **kwargs): pass
+            def candidates(self, *args, **kwargs): return []
+            def status(self): return {"enabled": True, "ready": True}
+            def sync(self, *args, **kwargs): pass
+
+        saved = os.environ.pop("PERSONAL_MEMORY_DISABLE_SEMANTIC", None)
+        self.addCleanup(os.environ.__setitem__, "PERSONAL_MEMORY_DISABLE_SEMANTIC", saved)
+        with patch("personal_memory.semantic.SemanticIndex", FakeSemantic):
+            owner = load_backend(store, config={"rerank": {"enabled": False}})
+            self.addCleanup(owner.close)
+            self.assertIsNotNone(owner.index_lease)  # lease precedes any worker start
+            with patch.object(Hybrid, "_start_index_thread", lambda self, engine: started.append(engine)):
+                owner.search("budget review")
+        self.assertEqual(len(started), 1, "lazy semantic initialization must run under ownership")
+
+    def test_initialization_failure_releases_ownership(self):
+        store = Store(self.root / "memory.db")
+        with patch.object(Hybrid, "_start_index_thread", side_effect=RuntimeError("startup boom")):
+            with self.assertRaises(RuntimeError):
+                Hybrid(store, {}, semantic=object(), start=True, index_owner=True)
+        # The failed initialization cleaned up its lease: a new owner can start.
+        backend = load_backend(store, config={})
+        self.addCleanup(backend.close)
+        self.assertIsNotNone(backend.index_lease)
+
+    def test_shutdown_cannot_release_ownership_while_a_writer_remains_active(self):
+        from personal_memory.asgi import ProcessLease
+        store = Store(self.root / "memory.db")
+        backend = load_backend(store, config={})
+
+        class Stuck:
+            def join(self, timeout=None): pass
+            def is_alive(self): return True
+
+        backend.threads.append(Stuck())
+        backend.close()
+        # A live indexing worker means ownership stays held; a second writer is rejected.
+        try:
+            with self.assertRaises(RuntimeError):
+                ProcessLease(self.root / "indexing.lock")
+        finally:
+            if backend.index_lease is not None:
+                backend.index_lease.close()
+
+    def test_partial_startup_drains_writer_before_releasing_ownership(self):
+        from personal_memory.asgi import ProcessLease
+        store = Store(self.root / "memory.db")
+        syncing, release, cleaning = threading.Event(), threading.Event(), threading.Event()
+        instances, failures = [], []
+        original_start, original_close = Hybrid._start_index_thread, Hybrid.close
+
+        class Engine:
+            def sync(self, batch):
+                syncing.set()
+                release.wait(10)
+                return False
+
+        def start(backend, engine):
+            if backend.threads:
+                raise RuntimeError("second worker failed")
+            instances.append(backend)
+            original_start(backend, engine)
+            if not syncing.wait(5):
+                raise AssertionError("first writer did not start")
+
+        def close(backend):
+            cleaning.set()
+            original_close(backend)
+
+        def construct():
+            try:
+                Hybrid(store, {}, semantic=Engine(), hindsight=Engine())
+            except BaseException as error:
+                failures.append(error)
+
+        with patch.object(Hybrid, "_start_index_thread", start), patch.object(Hybrid, "close", close):
+            constructor = threading.Thread(target=construct)
+            constructor.start()
+            try:
+                self.assertTrue(cleaning.wait(5))
+                self.assertTrue(instances[0].threads[0].is_alive())
+                with self.assertRaises(RuntimeError):
+                    ProcessLease(self.root / "indexing.lock")
+            finally:
+                release.set()
+                constructor.join(10)
+        self.assertFalse(constructor.is_alive())
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], RuntimeError)
+        self.assertEqual(str(failures[0]), "second worker failed")
+        backend = instances[0]
+        self.assertTrue(backend.stop.is_set())
+        self.assertFalse(any(thread.is_alive() for thread in backend.threads))
+        with self.assertRaises(RuntimeError):
+            backend.pool.submit(lambda: None)
+        lease = ProcessLease(self.root / "indexing.lock")
+        lease.close()
 
     def test_service_retrieval_reads_from_the_running_service(self):
         service = MemoryService(self.root / "data", "a" * 40,

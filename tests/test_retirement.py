@@ -8,9 +8,12 @@ evidence is already retired, and restoring source visibility never reactivates
 conclusions that were invalidated.
 """
 import copy
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from personal_memory import curated, reset
 from personal_memory.intelligence import Intelligence
@@ -148,6 +151,91 @@ class RetirementTests(unittest.TestCase):
         self.assertGreaterEqual(report["curated"], 1)
         self.assertEqual(curated.read(self.store)["stores"]["memory"]["entries"], [])
         self.assertEqual(lifecycle.repair_retired_dependencies(self.store)["curated"], 0)
+
+
+class UpgradeMigrationTests(unittest.TestCase):
+    """Stale derived memory is repaired once, transactionally, at initialization."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "memory.db"
+
+    def _create_legacy_database(self):
+        # A database written before retirement was unified: the evidence is
+        # hidden without the cascade and dependent artifacts are still active.
+        store = Store(self.path)
+        rid = store.ingest_contract([item("legacy")])["records"][0]["id"]
+        outcome = Learning(store).outcome(key="old", goal="Repair bicycle", action="Check brakes",
+                                          result="Done", outcome="success", evidence_ids=[rid],
+                                          actor="agent")
+        subject = store.entity("person", "Owner")["id"]
+        Intelligence(store).belief(key="b", subject_id=subject, predicate="rides", value="daily",
+                                   evidence=[{"record_id": rid, "quote": "bicycle repair"}],
+                                   actor="agent")
+        curated.apply(store, target="memory", expected_version=0, request_id="c",
+                      operations=[{"action": "add", "content": "prefers cycling",
+                                    "evidence_ids": [rid]}],
+                      evidence_ids=[], epoch=0, actor="test")
+        with store.connect() as db:
+            db.execute("INSERT OR REPLACE INTO record_visibility VALUES(?,1,NULL)", (rid,))
+        # Databases built before unified retirement carry no migration marker.
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute("DROP TABLE IF EXISTS memory_migrations")
+        return rid, subject, outcome
+
+    def _markers(self):
+        with closing(sqlite3.connect(self.path)) as db:
+            return db.execute("SELECT name,version FROM memory_migrations").fetchall()
+
+    def _state(self, logical_key):
+        with closing(sqlite3.connect(self.path)) as db:
+            return db.execute("SELECT state FROM learning_objects WHERE logical_key=?",
+                              (logical_key,)).fetchone()[0]
+
+    def test_upgrade_repairs_stale_derived_memory_before_first_recall(self):
+        rid, subject, outcome = self._create_legacy_database()
+        reopened = Store(self.path)
+        self.assertEqual(Learning(reopened).browse(kind="outcome", state="recorded")["items"], [])
+        self.assertEqual(Intelligence(reopened).beliefs(subject_id=subject)["beliefs"], [])
+        self.assertEqual(curated.read(reopened)["stores"]["memory"]["entries"], [])
+        self.assertIn(("retirement_repair", 1), self._markers())
+
+    def test_interrupted_migration_reruns_and_completes_on_restart(self):
+        rid, subject, outcome = self._create_legacy_database()
+        with patch.object(Store, "audit", side_effect=RuntimeError("crash mid-migration")):
+            with self.assertRaises(RuntimeError):
+                Store(self.path)
+        # The repair and its marker share one transaction: a crash leaves nothing applied.
+        self.assertEqual(self._markers(), [])
+        self.assertEqual(self._state("old"), "recorded")
+        reopened = Store(self.path)
+        self.assertEqual(Learning(reopened).browse(kind="outcome", state="recorded")["items"], [])
+        self.assertEqual(self._state("old"), "invalidated")
+        self.assertEqual(len(self._markers()), 1)
+
+    def test_reopen_after_migration_performs_no_repeated_work(self):
+        self._create_legacy_database()
+        Store(self.path)
+        with closing(sqlite3.connect(self.path)) as db:
+            repairs = db.execute("SELECT count(*) FROM audit WHERE action='retirement_repair'").fetchone()[0]
+        self.assertEqual(repairs, 1)
+        Store(self.path)
+        Store(self.path)
+        with closing(sqlite3.connect(self.path)) as db:
+            again = db.execute("SELECT count(*) FROM audit WHERE action='retirement_repair'").fetchone()[0]
+            markers = db.execute("SELECT count(*) FROM memory_migrations").fetchone()[0]
+        self.assertEqual(again, 1)
+        self.assertEqual(markers, 1)
+
+    def test_restored_visibility_keeps_invalidated_conclusions_inactive(self):
+        rid, subject, outcome = self._create_legacy_database()
+        repaired = Store(self.path)
+        with repaired.connect() as db:
+            db.execute("DELETE FROM record_visibility WHERE record_id=?", (rid,))
+        reopened = Store(self.path)
+        self.assertEqual(self._state("old"), "invalidated")
+        self.assertEqual(Learning(reopened).browse(kind="outcome", state="recorded")["items"], [])
 
 
 if __name__ == "__main__":

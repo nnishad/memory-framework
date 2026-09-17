@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS source_item_metadata(
   source TEXT, source_id TEXT, metadata TEXT, PRIMARY KEY(source,source_id));
 CREATE TABLE IF NOT EXISTS source_schedule(
   connection_id TEXT, role TEXT, next_at REAL NOT NULL DEFAULT 0,
-  failures INTEGER NOT NULL DEFAULT 0, error TEXT,
+  failures INTEGER NOT NULL DEFAULT 0, error TEXT, config_key TEXT,
   PRIMARY KEY(connection_id,role));
 '''
 

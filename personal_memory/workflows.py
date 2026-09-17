@@ -270,12 +270,13 @@ class Workflows:
         # Independent administrative review publishes attributed inferred beliefs.
         # It does not label their contents verified or grant permissions.
         from . import lifecycle
-        # Retire any conclusions already built on evidence that has since been
-        # hidden or forgotten before this review publishes new beliefs.
-        lifecycle.repair_retired_dependencies(self.store)
         with self.store.lock,self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE');result=self.learning._get(db,result_id,'consolidation')
             if result['state'] not in {'candidate','recorded'}:raise ValueError('Consolidation unavailable')
+            # Targeted validation: this review may only publish from evidence that is
+            # still live and visible. The archive-wide repair is a startup migration.
+            cited=sorted({quote['record_id'] for quote in result['payload'].get('quotes',[]) if isinstance(quote,dict) and 'record_id' in quote})
+            lifecycle.require_live_evidence(db,cited,message='Consolidation evidence was retired; submit a new job')
             created=[]
             for index,proposal in enumerate(result['payload'].get('proposals',[])):
                 payload={**proposal,'origin':'inferred','context':{},'valid_from':None,'valid_to':None,'truth':'unverified','quantifier':'value','domain':None}
@@ -313,23 +314,50 @@ class Workflows:
                     'passed':all(c['candidate_pass'] for c in cases),'verification':'executed_suite'},'parents':[candidate['id']]}
 
     def scan(self):
-        """Crash-replayable source cursor; one extractive episode per canonical record."""
+        """Crash-replayable source cursor; one extractive episode per live canonical record.
+
+        Retired evidence never wedges the cursor: records hidden after selection
+        (or whose auto snapshot was invalidated by a retirement) are skipped and
+        the cursor advances past them, while genuine failures leave the cursor in
+        place so the next pass retries.
+        """
         if not self.config.get('auto_consolidate',False):return 0
+        from . import lifecycle
         from .intelligence import Intelligence
         with self.store.connect() as db:
             row=db.execute("SELECT watermark FROM workflow_cursor WHERE name='ingest'").fetchone();watermark=row[0] if row else 0
-            rows=db.execute("SELECT a.id,a.object_id FROM audit a JOIN records r ON r.id=a.object_id WHERE a.action='ingest' AND a.id>? AND r.deleted=0 ORDER BY a.id LIMIT 10",(watermark,)).fetchall()
+            rows=db.execute("""SELECT a.id,a.object_id FROM audit a JOIN records r ON r.id=a.object_id WHERE a.action='ingest' AND a.id>? AND r.deleted=0
+                AND NOT EXISTS(SELECT 1 FROM record_visibility v WHERE v.record_id=r.id AND v.hidden=1) ORDER BY a.id LIMIT 10""",(watermark,)).fetchall()
         for row in rows:
             if self.stop.is_set():return 0
-            snapshot=Intelligence(self.store).snapshot(key='auto/'+row['object_id'],record_ids=[row['object_id']],actor='auto-consolidator')
-            with self.store.connect() as db:length=db.execute('SELECT length(text) FROM records WHERE id=?',(row['object_id'],)).fetchone()[0]
-            for start in range(0,length,1800):
-                if self.stop.is_set():return 0
-                self.enqueue(key='auto/'+row['object_id']+'/'+str(start),type='consolidate',snapshot_id=snapshot['id'],
-                             segments=[{'record_id':row['object_id'],'start':start,'end':min(length,start+2000)}],actor='auto-consolidator')
-            with self.store.lock,self.store.connect() as db:
-                db.execute("INSERT INTO workflow_cursor VALUES('ingest',?) ON CONFLICT(name) DO UPDATE SET watermark=max(watermark,excluded.watermark)",(row['id'],))
+            try:
+                with self.store.connect() as db:
+                    # Recheck visibility after selection: retirement may race with this pass.
+                    if not lifecycle.live_and_visible(db,row['object_id']):raise ValueError('Evidence retired after selection')
+                snapshot=Intelligence(self.store).snapshot(key='auto/'+row['object_id'],record_ids=[row['object_id']],actor='auto-consolidator')
+                with self.store.connect() as db:length=db.execute('SELECT length(text) FROM records WHERE id=?',(row['object_id'],)).fetchone()[0]
+                for start in range(0,length,1800):
+                    if self.stop.is_set():return 0
+                    self.enqueue(key='auto/'+row['object_id']+'/'+str(start),type='consolidate',snapshot_id=snapshot['id'],
+                                 segments=[{'record_id':row['object_id'],'start':start,'end':min(length,start+2000)}],actor='auto-consolidator')
+            except ValueError:
+                # Only retirement races skip; anything else must retry from this cursor.
+                if not self._retired_in_flight(row['object_id']):raise
+            self._advance_cursor(row['id'])
         return len(rows)
+
+    def _retired_in_flight(self,record_id):
+        from . import lifecycle
+        with self.store.connect() as db:
+            if not lifecycle.live_and_visible(db,record_id):return True
+            # A snapshot invalidated by an earlier retirement can never be recreated
+            # under the same key; its record must not fail every subsequent scan.
+            return db.execute("SELECT 1 FROM learning_objects WHERE kind='snapshot' AND logical_key=? AND state IN ('invalidated','retracted')",
+                              ('auto/'+record_id,)).fetchone() is not None
+
+    def _advance_cursor(self,watermark):
+        with self.store.lock,self.store.connect() as db:
+            db.execute("INSERT INTO workflow_cursor VALUES('ingest',?) ON CONFLICT(name) DO UPDATE SET watermark=max(watermark,excluded.watermark)",(watermark,))
 
     def autolearn(self):
         policies=self.config.get('learning_policies',{})
@@ -382,8 +410,13 @@ class Workflows:
         if self.thread:return
         def loop():
             while not self.stop.is_set():
-                try:self.scan();self.autolearn();self.reconcile_promotions();busy=self.tick();self.deliver_event();self.last_error=None
-                except Exception as error:busy=False;self.last_error=type(error).__name__
+                # Scan/queue maintenance failures must never starve queued jobs.
+                iteration_error=None
+                try:self.scan();self.autolearn();self.reconcile_promotions()
+                except Exception as error:self.last_error=iteration_error=type(error).__name__
+                try:busy=self.tick();self.deliver_event()
+                except Exception as error:busy=False;iteration_error=type(error).__name__
+                self.last_error=iteration_error
                 self.stop.wait(.05 if busy else 1)
         self.thread=threading.Thread(target=loop,name='memory-workflows',daemon=True);self.thread.start()
 

@@ -42,6 +42,33 @@ class PagedAdapter(FixtureAdapter):
                                                  mode=state["mode"]))
 
 
+class ToggleDiscover(FixtureAdapter):
+    """Backfill adapter whose next discovery can be forced to fail once."""
+
+    def __init__(self):
+        super().__init__()
+        self.discoveries = 0
+        self.fail_next = False
+
+    def discover(self, context):
+        self.discoveries += 1
+        if self.fail_next:
+            self.fail_next = False
+            raise AdapterError("temporary", "upstream discovery unavailable")
+        return [stream_spec("messages", modes=["backfill"], version_order="integer")]
+
+    def read_page(self, context, state):
+        seen = (state["cursor"] or {}).get("seen", 0)
+        operations = [source_operation("upsert", f"m{seen}",
+                                       records=[note_record(f"m{seen}", source=context["source"])],
+                                       source_version=seen + 1)]
+        return source_page(page_id=f"pg{seen}", operations=operations,
+                           next_state=read_state(state_version=state["state_version"],
+                                                 cursor={"seen": seen + 1,
+                                                         "done": seen + 1 >= 3},
+                                                 mode=state["mode"]))
+
+
 class FailingDiscover(FixtureAdapter):
     def __init__(self, kind="temporary", failures=1):
         super().__init__()
@@ -73,8 +100,30 @@ class DiscoveryCachingTests(unittest.TestCase):
                                       scope={"poll_seconds": 300}, retention="archive")
         self.runtime = runtime
         self.store = store
+        self.adapter = adapter
         self.cid = conn["connection_id"]
         return adapter
+
+    def _rotate_config(self, tag):
+        with self.store.connect() as db:
+            db.execute("UPDATE source_connections SET generation=generation+1, scope_hash=? WHERE id=?",
+                       (tag, self.cid))
+
+    def _backoff(self):
+        with self.store.connect() as db:
+            return db.execute("SELECT next_at,config_key FROM source_schedule WHERE connection_id=? AND role='discovery'",
+                              (self.cid,)).fetchone()
+
+    def _fail_refresh_into_backoff(self):
+        self.runtime.tick()                       # successful discovery under the original config
+        self.assertEqual(self.adapter.discoveries, 1)
+        self._rotate_config("hash-fp2")           # a genuine configuration change
+        self.adapter.fail_next = True
+        self.runtime.tick()                       # one immediate refresh, which fails
+        self.assertEqual(self.adapter.discoveries, 2)
+        # The retry deadline must be recorded against the current config fingerprint
+        # so a restart (or a newer config change) can interpret it correctly.
+        self.assertIsNotNone(self._backoff()[1])
 
     def test_declarations_resolved_once_across_multiple_pages(self):
         adapter = self._runtime(PagedAdapter())
@@ -119,6 +168,52 @@ class DiscoveryCachingTests(unittest.TestCase):
                        (time.time() + 3600, self.cid))
         self.runtime.tick()                       # stale cache must be invalidated by the change
         self.assertEqual(adapter.discoveries, 2)
+
+    def test_failed_refresh_backoff_is_bound_to_the_new_config(self):
+        # Successful discovery -> config change -> failed refresh -> immediate ticks
+        # must respect that refresh's retry deadline rather than retry every tick.
+        self._runtime(ToggleDiscover())
+        self._fail_refresh_into_backoff()
+        for _ in range(3):
+            self.runtime.tick()
+        self.assertEqual(self.adapter.discoveries, 2)
+        # The persisted retry deadline belongs to the current (post-change) config.
+        row = self._backoff()
+        self.assertIsNotNone(row[1])
+
+    def test_restart_during_backoff_honors_the_deadline(self):
+        self._runtime(ToggleDiscover())
+        self._fail_refresh_into_backoff()
+        # A fresh process (empty in-memory cache) must still respect the persisted,
+        # config-bound backoff instead of rediscovering immediately.
+        reopened = SourceRuntime(self.store, self.root, config={"enabled": False},
+                                 adapter=self.adapter)
+        self.addCleanup(reopened.close)
+        reopened.tick()
+        reopened.tick()
+        self.assertEqual(self.adapter.discoveries, 2)
+        # Declarations resolved before the restart under the old config are discarded.
+        self.assertNotIn(self.cid, reopened.discovered)
+
+    def test_newer_config_change_during_backoff_forces_immediate_attempt(self):
+        self._runtime(ToggleDiscover())
+        self._fail_refresh_into_backoff()
+        # A genuinely newer configuration supersedes the pending backoff and is due now.
+        self._rotate_config("hash-fp3")
+        self.runtime.tick()
+        self.assertEqual(self.adapter.discoveries, 3)
+
+    def test_successful_retry_refreshes_declarations_and_resumes_ingestion(self):
+        self._runtime(ToggleDiscover())
+        self._fail_refresh_into_backoff()
+        with self.store.connect() as db:      # expire the backoff without real sleeping
+            db.execute("UPDATE source_schedule SET next_at=? WHERE connection_id=? AND role='discovery'",
+                       (time.time() - 1, self.cid))
+        self.runtime.tick()                    # retry now succeeds and resumes ingestion
+        self.assertEqual(self.adapter.discoveries, 3)
+        with self.store.connect() as db:
+            committed = db.execute("SELECT count(*) FROM records WHERE deleted=0").fetchone()[0]
+        self.assertGreater(committed, 0)
 
 
 if __name__ == "__main__":

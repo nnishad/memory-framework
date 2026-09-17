@@ -767,6 +767,47 @@ class DeliveryTests(AwarenessFixture):
 class PauseResumeTests(AwarenessFixture):
     """Phase 5 (L04, §11): a disconnected source parks pending attention."""
 
+    def test_due_retry_waits_for_resume_without_calling_model(self):
+        from personal_memory.awareness_worker import process_once
+        from unittest.mock import Mock
+        self.arrive("m1", 1)
+        self.background()
+        first = awareness.claim(self.store, "bg1", owner="w1")
+        awareness.defer(self.store, first, reason="temporary failure", retry_in=0)
+        self.sync.pause(self.gmail["connection_id"])
+        self.assertFalse(awareness.pending(self.store, "bg1")["claimable"])
+        self.assertIsNone(awareness.claim(self.store, "bg1", owner="w2"))
+        analyze = Mock()
+        self.assertEqual(process_once(self.store, consumer_id="bg1", analyze=analyze)["state"], "idle")
+        analyze.assert_not_called()
+        self.sync.resume(self.gmail["connection_id"])
+        self.assertTrue(awareness.pending(self.store, "bg1")["claimable"])
+        second = awareness.claim(self.store, "bg1", owner="w2")
+        self.assertEqual(second["batch_id"], first["batch_id"])
+        self.assertGreater(second["fence"], first["fence"])
+
+    def test_resume_preserves_retry_backoff(self):
+        self.arrive("m1", 1)
+        self.background()
+        first = awareness.claim(self.store, "bg1", owner="w1")
+        awareness.defer(self.store, first, reason="temporary failure", retry_in=3600)
+        self.sync.pause(self.gmail["connection_id"])
+        awareness.sweep(self.store, "bg1")
+        self.assertIsNone(awareness.claim(self.store, "bg1", owner="w2"))
+        self.sync.resume(self.gmail["connection_id"])
+        awareness.sweep(self.store, "bg1")
+        self.assertFalse(awareness.pending(self.store, "bg1")["claimable"])
+        self.assertIsNone(awareness.claim(self.store, "bg1", owner="w2"))
+
+    def test_process_policy_allows_due_retry_while_paused(self):
+        self.arrive("m1", 1)
+        self.background(policy={"on_source_pause": "process"})
+        first = awareness.claim(self.store, "bg1", owner="w1")
+        awareness.defer(self.store, first, reason="temporary failure", retry_in=0)
+        self.sync.pause(self.gmail["connection_id"])
+        self.assertTrue(awareness.pending(self.store, "bg1")["claimable"])
+        self.assertIsNotNone(awareness.claim(self.store, "bg1", owner="w2"))
+
     def test_l04_paused_source_holds_pending_work_until_resumed(self):
         self.arrive("m1", 1)
         self.sync.pause(self.gmail["connection_id"])
@@ -796,6 +837,78 @@ class PauseResumeTests(AwarenessFixture):
                            coordinates={"arrival": "fresh"}, occurred_at=OCCURRED)
         self.background()
         self.assertIsNotNone(awareness.claim(self.store, "bg1", owner="w1"))
+
+    def test_l04_expired_lease_on_a_paused_source_never_reaches_the_model(self):
+        self.arrive("m1", 1)
+        self.background()
+        first = awareness.claim(self.store, "bg1", owner="w1", ttl=0)
+        self.assertIsNotNone(first)
+        self.sync.pause(self.gmail["connection_id"])   # paused while the batch was leased
+        from personal_memory import awareness_worker
+        model_calls = []
+
+        def analyze(packet):
+            model_calls.append(packet["batch_id"])
+            return {"summary": "should not run", "citations": [], "proposals": []}
+
+        outcome = awareness_worker.process_once(self.store, consumer_id="bg1", analyze=analyze)
+        self.assertEqual(outcome["state"], "idle")
+        self.assertEqual(model_calls, [])              # reclaim parked it as held, no model call
+
+    def test_l04_expired_lease_reclaims_to_held_and_resumes_after_resume(self):
+        self.arrive("m1", 1)
+        self.background()
+        first = awareness.claim(self.store, "bg1", owner="w1", ttl=0)
+        self.sync.pause(self.gmail["connection_id"])   # paused while the batch was leased
+        # Reclaim honors the pause policy: the expired lease parks as held and no
+        # new worker may take it, so the model is never consulted.
+        self.assertIsNone(awareness.claim(self.store, "bg1", owner="w2", ttl=300))
+        states = awareness.status(self.store)["batches"]
+        self.assertEqual(states.get("held", 0), 1)
+        self.assertEqual(states.get("leased", 0), 0)
+        # Resuming the source makes the batch claimable again.
+        self.sync.resume(self.gmail["connection_id"])
+        second = awareness.claim(self.store, "bg1", owner="w2", ttl=300)
+        self.assertIsNotNone(second)
+        self.assertEqual(second["batch_id"], first["batch_id"])
+        self.assertGreater(second["fence"], first["fence"])
+        awareness.complete(self.store, second, summary="ok")
+
+    def test_l04_pause_before_claim_holds_materialized_work(self):
+        self.arrive("m1", 1)
+        self.background()                               # swept while active: pending
+        self.sync.pause(self.gmail["connection_id"])    # paused before anyone claims
+        self.assertIsNone(awareness.claim(self.store, "bg1", owner="w1", ttl=300))
+        self.assertEqual(awareness.status(self.store)["batches"].get("held", 0), 1)
+
+    def test_l04_process_policy_reclaims_expired_lease_immediately(self):
+        self.arrive("m1", 1)
+        self.background(policy={"on_source_pause": "process"})
+        first = awareness.claim(self.store, "bg1", owner="w1", ttl=0)
+        self.assertIsNotNone(first)
+        self.sync.pause(self.gmail["connection_id"])
+        # A consumer configured to keep processing paused sources reclaims the
+        # expired lease straight back into the claimable set.
+        second = awareness.claim(self.store, "bg1", owner="w2", ttl=300)
+        self.assertIsNotNone(second)
+        self.assertEqual(second["batch_id"], first["batch_id"])
+        awareness.complete(self.store, second, summary="ok")
+
+    def test_l04_previous_worker_completes_late_after_paused_reclaim(self):
+        self.arrive("m1", 1)
+        self.background()
+        first = awareness.claim(self.store, "bg1", owner="w1", ttl=0)
+        self.sync.pause(self.gmail["connection_id"])
+        self.assertIsNone(awareness.claim(self.store, "bg1", owner="w2", ttl=300))
+        with self.assertRaises(ValueError):
+            awareness.complete(self.store, first, summary="ghost result")
+        # Fencing survives the pause cycle: the eventual winner completes once.
+        self.sync.resume(self.gmail["connection_id"])
+        second = awareness.claim(self.store, "bg1", owner="w2", ttl=300)
+        self.assertIsNotNone(second)
+        awareness.complete(self.store, second, summary="ok")
+        with self.assertRaises(ValueError):
+            awareness.complete(self.store, first, summary="ghost result")
 
 
 class ServiceBoundaryTests(unittest.TestCase):
