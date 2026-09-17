@@ -38,6 +38,10 @@
       "before": "9634ebdc01b12591753fa9a1653f4aa8937edde7130175bbd69be8a0e5895ab7",
       "after": "3bca871c919228ee6cf982da8635298d481df8e99b7334fa9e9fa5f2d3d2c0d7"
     },
+    "agent/turn_api_call.py": {
+      "before": "4d56b4403b3c1e2f197c2b1d02425594a6474f3935d03f22bddcbc29ddabb31d",
+      "after": "7f8cacb04a06bdb17ad510e1870a04ca7bbc08ab0fbefe67646cc20afe1492b7"
+    },
     "cli.py": {
       "before": "f660357c101629a0ebcd8f4ce6aa2d3874fcfe87de6ea4b1d121cc8b2746584f",
       "after": "88027391a7545502f824f5223d19091b7e6c343d1683b6b7fac59b7f6bf6ecee"
@@ -48,7 +52,7 @@
     },
     "cron/scheduler.py": {
       "before": "df7b82c50485cece408264f3cd44dc910b6b2a7d319b6d138bd42e2cf7ba2e86",
-      "after": "04e39cafd3e36858f34e420076fc1115e813e148af7a052f6d754f437c88a541"
+      "after": "b820f9d3ab52b5b184b9f42660ce68e66caa1d3fdd0f49f79159287c77294ea5"
     },
     "cron/scheduler_delivery.py": {
       "before": "43ea115bba07e6b789a1c8552dd606bd23e43ae6b80332844520e6510f44d96d",
@@ -127,7 +131,7 @@
       "after": "66822fd793e31cfabb234c7f18ecc675444fb0bbe47525ca42c95081f27b9c6d"
     }
   },
-  "patch_sha256": "d34da13ec2d2ffcce62f0fa7eff719c7bd101317928da0298f0ce74d3454d7f8",
+  "patch_sha256": "87a45f73f214f8901023c6c272bdd03dcc3708a0fba3b15dc2c05f87bb2ba6c5",
   "host_memory_api": 2,
   "native_store_contract": 1,
   "framework_version": "0.8.0rc8"

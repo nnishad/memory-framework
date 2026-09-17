@@ -26,10 +26,19 @@ def strict_json(raw):
 
 class ProcessLease:
     def __init__(self,path):
-        import fcntl
+        import os
         path=Path(path);path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-        self.file=path.open("a+");path.chmod(0o600)
-        try:fcntl.flock(self.file.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+        self.file=path.open("a+b");path.chmod(0o600)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                if not self.file.seek(0,2):
+                    self.file.write(b"\0");self.file.flush()
+                self.file.seek(0)
+                msvcrt.locking(self.file.fileno(),msvcrt.LK_NBLCK,1)
+            else:
+                import fcntl
+                fcntl.flock(self.file.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
         except OSError:
             self.file.close();raise RuntimeError("Another service owns this data directory") from None
     def close(self):self.file.close()
@@ -52,7 +61,7 @@ class Application:
                         self.hindsight_runtime=Runtime(self.settings).start()
                         self.service=MemoryService(self.settings["data_dir"],self.settings["token"],
                             retrieval_config=self.settings.get("retrieval",{}),backend=self.settings.get("backend"),
-                            principals=self.settings.get("principals",[]),extension_schemas=self.settings.get("extension_schemas",{}),intelligence_config=self.settings.get("intelligence",{}))
+                            principals=self.settings.get("principals",[]),extension_schemas=self.settings.get("extension_schemas",{}),intelligence_config=self.settings.get("intelligence",{}),source_config=self.settings.get('sources',{}))
                         # Prime the lazy retrieval models off the request path so the first Hermes
                         # turn after a restart is fast instead of paying the ~7.7s cold-start. Run
                         # in the background: readiness must not block on model/session warm-up.

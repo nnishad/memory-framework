@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import tarfile
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 from .common import atomic_json,now
@@ -29,7 +30,7 @@ def _key(path):
 
 
 def inspect_database(path):
-    with sqlite3.connect(Path(path).resolve().as_uri()+"?mode=ro",uri=True) as db:
+    with closing(sqlite3.connect(Path(path).resolve().as_uri()+"?mode=ro",uri=True)) as db:
         integrity=[r[0] for r in db.execute("PRAGMA integrity_check")]
         foreign=[list(r) for r in db.execute("PRAGMA foreign_key_check")]
         if integrity!=["ok"] or foreign:raise ValueError("Database integrity verification failed")
@@ -66,8 +67,10 @@ def backup(home,destination,key_file):
                 if name=="memory.db":raise ValueError("Memory database does not exist")
                 continue
             target=tmp/name
-            with sqlite3.connect(source.resolve().as_uri()+"?mode=ro",uri=True) as src,sqlite3.connect(target) as dst:
+            with closing(sqlite3.connect(source.resolve().as_uri()+"?mode=ro",uri=True)) as src, \
+                    closing(sqlite3.connect(target)) as dst:
                 src.backup(dst,pages=256,sleep=.05)
+                dst.commit()
             target.chmod(0o600)
             manifest["databases"][name]={**inspect_database(target),"sha256":_hash(target)}
         atomic_json(tmp/"manifest.json",manifest)
@@ -141,7 +144,8 @@ def restore(archive,key_file,destination,deletion_ledger=None):
         # after the canonical snapshot but before the ledger snapshot.
         from .store import Store
         Store(restored/"memory.db")
-        with sqlite3.connect(restored/"memory.db") as db:db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        with closing(sqlite3.connect(restored/"memory.db")) as db:
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         for name in ("memory.db","outbox.db","memory.deletions.db"):
             if (restored/name).exists():manifest["databases"][name]={**inspect_database(restored/name),"sha256":_hash(restored/name)}
         manifest["current_deletion_ledger_applied"]=deletion_ledger is not None

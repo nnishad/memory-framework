@@ -63,10 +63,16 @@ def doctor(home,offline=False):
     try:
         inspect_database(database);add("database_integrity",True,"SQLite integrity and foreign keys passed")
     except Exception as error:add("database_integrity",False,type(error).__name__)
+    try:
+        from .awareness import diagnose
+        from .store import Store
+        for check in diagnose(Store(database)):add(check["check"],check["passed"],check["detail"])
+    except Exception as error:add("awareness_journal",False,type(error).__name__)
     outbox=home/"personal-memory/outbox.db"
     if outbox.exists():
         import sqlite3
-        with sqlite3.connect(outbox.resolve().as_uri()+"?mode=ro",uri=True) as db:
+        from contextlib import closing
+        with closing(sqlite3.connect(outbox.resolve().as_uri()+"?mode=ro",uri=True)) as db:
             table=db.execute("SELECT 1 FROM sqlite_master WHERE name='dead_letters'").fetchone()
             dead=db.execute("SELECT count(*) FROM dead_letters").fetchone()[0] if table else 0
             native_table=db.execute("SELECT 1 FROM sqlite_master WHERE name='native_history_retirements'").fetchone()

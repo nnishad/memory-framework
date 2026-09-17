@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 import tempfile
 import time
 import unittest
@@ -115,7 +116,7 @@ class IntelligenceTests(unittest.TestCase):
         self.store.forget(self.rid);self.assertEqual(self.i.quality()['feedback'],[])
     def test_terminal_task_survives_old_database_restore(self):
         task=self.task(due_at='2020-01-01T00:00:00Z');old=self.root/'old.db'
-        with self.store.connect() as source,sqlite3.connect(old) as target:source.backup(target)
+        with self.store.connect() as source,closing(sqlite3.connect(old)) as target:source.backup(target)
         self.i.transition(task_id=task['id'],expected_version=1,state='cancelled',evidence_ids=self.refs,actor='agent')
         from personal_memory.deletions import DeletionLedger
         DeletionLedger(self.root/'old.deletions.db').merge(self.store.deletions)
@@ -276,5 +277,66 @@ class IntelligenceTests(unittest.TestCase):
         self.assertEqual(openai_rerank(cfg,{'query':'q','documents':[{'id':self.rid,'text':'bicycle'}]})['ordered_ids'],self.refs)
         self.assertEqual(openai_consolidate(cfg,{'evidence':[{'record_id':self.rid,'text':'bicycle repair'}]})['summary'],'fixture')
         self.assertEqual(openai_evaluate(cfg,{'input':{},'candidate':None}),{'answer':'fixture'})
+
+    def test_model_consolidation_schema_and_legacy_fenced_json(self):
+        from unittest.mock import patch
+        from personal_memory.adapters import openai_consolidate
+        from personal_memory.client import ServiceError
+
+        expected={'summary':'Repair note','quotes':self.evidence,'proposals':[
+            {'subject_id':self.subject,'predicate':'repair','value':'needed','evidence':self.evidence}]}
+        calls=[]
+        def model_call(client,path,payload):
+            calls.append(payload)
+            if len(calls)==1:raise ServiceError(400,'unsupported response format')
+            return {'choices':[{'message':{'content':'```json\n'+json.dumps(expected)+'\n```'}}]}
+        with patch('personal_memory.client.Client.call',new=model_call):
+            actual=openai_consolidate({'url':'http://127.0.0.1:8080/v1','model':'fixture'},
+                {'evidence':[{'record_id':self.rid,'text':'bicycle repair'}],'known_entities':[{'id':self.subject}]})
+        self.assertEqual(actual,expected)
+        self.assertEqual(calls[0]['response_format']['type'],'json_schema')
+        schema=calls[0]['response_format']['json_schema']
+        self.assertTrue(schema['strict'])
+        self.assertEqual(set(schema['schema']['properties']),{'summary','quotes','proposals'})
+        self.assertEqual(schema['schema']['properties']['proposals']['items']['properties']['subject_id']['enum'],[self.subject])
+        self.assertEqual(calls[1]['response_format'],{'type':'json_object'})
+
+    def test_model_consolidation_rejects_prose_and_nonfinite_json(self):
+        from personal_memory.adapters import _model_object
+        for content in ['Here is JSON: {"summary":"x"}','```json\n{"summary":"x"}\n``` extra',
+                        '{"summary":NaN}', '[{"summary":"x"}]']:
+            with self.subTest(content=content),self.assertRaises(ValueError):
+                _model_object({'choices':[{'message':{'content':content}}]})
+
+    def test_consolidation_rejects_quotes_outside_supplied_segment(self):
+        from unittest.mock import patch
+        source=item('partitioned');source['text']='bicycle repair and hidden detail'
+        rid=self.store.ingest_contract([source])['records'][0]['id']
+        snapshot=self.i.snapshot(key='partitioned',record_ids=[rid],actor='agent')
+        worker=self.worker()
+        job=worker.enqueue(key='partitioned',type='consolidate',snapshot_id=snapshot['id'],
+            segments=[{'record_id':rid,'start':0,'end':14}],actor='agent')
+        result={'summary':'Unsupported','quotes':[{'record_id':rid,'quote':'hidden detail'}],
+            'proposals':[]}
+        with patch('personal_memory.workflows.run_adapter',return_value=result):worker.tick()
+        self.assertEqual(worker.get(job_id=job['id'])['state'],'pending')
+        self.assertEqual(worker.get(job_id=job['id'])['error'],'ValueError')
+
+    def test_consolidation_keeps_summary_and_drops_invalid_proposal(self):
+        from unittest.mock import patch
+        worker=self.worker()
+        snapshot=self.i.snapshot(key='invalid-proposal',record_ids=self.refs,actor='agent')
+        job=worker.enqueue(key='invalid-proposal',type='consolidate',snapshot_id=snapshot['id'],actor='agent')
+        result={'summary':'Repair note','quotes':self.evidence,'proposals':[
+            {'subject_id':'ent_unknown','predicate':'repair','value':'needed','evidence':self.evidence},
+            {'subject_id':self.subject,'predicate':'repair','value':'unsupported',
+             'evidence':[{'record_id':self.rid,'quote':'not in source'}]},
+            {'subject_id':self.subject,'predicate':'repair','value':'needed','evidence':self.evidence}]}
+        with patch('personal_memory.workflows.run_adapter',return_value=result):worker.tick()
+        completed=worker.get(job_id=job['id'])
+        self.assertEqual(completed['state'],'completed',completed)
+        self.assertEqual(completed['result']['payload']['rejected_proposals'],2)
+        self.assertEqual(len(completed['result']['payload']['proposals']),1)
+        self.assertEqual(self.i.beliefs(subject_id=self.subject)['beliefs'],[])
 
 if __name__=='__main__':unittest.main()

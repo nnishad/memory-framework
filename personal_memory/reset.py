@@ -75,8 +75,24 @@ def _reset(store,token):
         resume(store)
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            db.execute("UPDATE source_connections SET state='paused',generation=generation+1")
+            db.execute("UPDATE source_streams SET lease_owner=NULL,lease_until=NULL")
+            db.execute("UPDATE source_jobs SET state='cancelled',payload='{}',result=NULL")
+            db.execute('DELETE FROM source_inbox')
+            db.execute('DELETE FROM source_item_metadata')
+            db.execute('DELETE FROM source_page_receipts')
             value=db.execute('SELECT value FROM memory_epoch WHERE id=1').fetchone()[0]+1
             db.execute('UPDATE memory_epoch SET value=? WHERE id=1',(value,))
+            db.execute("UPDATE awareness_batches SET state='cancelled',lease_owner=NULL,"
+                       "lease_until=NULL,reason='Memory epoch reset',updated_at=?"
+                       " WHERE state NOT IN ('complete','cancelled')",(now(),))
+            db.execute("DELETE FROM awareness_results")
+            db.execute("UPDATE awareness_deliveries SET state='cancelled',updated_at=?"
+                       " WHERE state IN ('queued','quiet_hold')",(now(),))
+            db.execute("DELETE FROM awareness_receipts WHERE kind='supplied'")
+            db.execute("UPDATE awareness_consumers SET cursor_seq=(SELECT COALESCE(MAX(sequence),0)"
+                       " FROM memory_changes),done_through=(SELECT COALESCE(MAX(sequence),0)"
+                       " FROM memory_changes),resync_required=1,updated_at=?",(now(),))
             db.execute("INSERT INTO memory_resets VALUES(?,'pending',?)",(value,now()))
             db.execute('INSERT INTO memory_reset_tokens VALUES(?,?)',(token,value))
             db.execute('INSERT INTO memory_reset_sources(epoch,source,source_id) SELECT ?,source,source_id FROM records GROUP BY source,source_id',(value,))

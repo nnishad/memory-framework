@@ -7,9 +7,10 @@ import importlib.metadata
 import threading
 import time
 import hashlib
+import json
 from pathlib import Path
 
-from .common import digest
+from .common import digest, now
 
 DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
@@ -116,7 +117,7 @@ class SemanticIndex:
                   model TEXT NOT NULL, record_id TEXT NOT NULL REFERENCES records(id),
                   PRIMARY KEY(model,record_id));
             """)
-            for row in db.execute("SELECT v.* FROM vector_chunks v JOIN records r ON r.id=v.record_id WHERE v.model=? AND r.deleted=0", (self.key,)):
+            for row in db.execute("SELECT v.* FROM vector_chunks v JOIN records r ON r.id=v.record_id WHERE v.model=? AND r.deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)", (self.key,)):
                 self._add(dict(row))
 
     def _add(self, row):
@@ -143,13 +144,15 @@ class SemanticIndex:
     def sync(self, batch=16):
         with self.sync_lock:
             with self.store.connect() as db:
-                deleted={r[0] for r in db.execute("SELECT id FROM records WHERE deleted=1")}
-                db.execute("DELETE FROM vector_chunks WHERE record_id IN (SELECT id FROM records WHERE deleted=1)")
+                deleted={r[0] for r in db.execute("SELECT r.id FROM records r WHERE r.deleted=1 OR EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)")}
+                db.execute("DELETE FROM vector_chunks WHERE record_id IN (SELECT r.id FROM records r WHERE r.deleted=1 OR EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1))")
+                db.execute("DELETE FROM vector_done WHERE record_id IN (SELECT r.id FROM records r WHERE r.deleted=1 OR EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1))")
                 with self.lock:
                     for label in [label for label,row in self.rows.items() if row[0] in deleted]:
                         if self.index:self.index.mark_deleted(label)
                         self.rows.pop(label,None);self.vectors.pop(label,None)
                 rows = [dict(r) for r in db.execute("""SELECT r.id,r.text FROM records r WHERE deleted=0
+                    AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)
                     AND NOT EXISTS(SELECT 1 FROM vector_done d WHERE d.model=? AND d.record_id=r.id)
                     AND NOT EXISTS(SELECT 1 FROM vector_failures f WHERE f.model=? AND f.record_id=r.id AND f.next_retry>?)
                     ORDER BY r.ingested_at,r.id LIMIT ?""", (self.key,self.key,time.time(),batch))]
@@ -162,6 +165,9 @@ class SemanticIndex:
                         db.execute("DELETE FROM vector_done WHERE model=? AND record_id=?",(self.key,row["id"]))
                         db.execute("INSERT INTO vector_failures VALUES(?,?,?,1,?) ON CONFLICT(model,record_id) DO UPDATE SET attempts=attempts+1,error=excluded.error,next_retry=excluded.next_retry",
                                    (self.key,row["id"],type(error).__name__,time.time()+30))
+                        db.execute("INSERT OR REPLACE INTO processing_readiness VALUES(?,?,?,?,?)",
+                                   (row['id'],'semantic','failed',
+                                    json.dumps({'error':type(error).__name__}),now()))
             self.last_error = None
             return len(rows)
 
@@ -182,7 +188,7 @@ class SemanticIndex:
             normalized.append(vector)
         additions = []
         with self.store.lock, self.store.connect() as db:
-            if not db.execute("SELECT 1 FROM records WHERE id=? AND deleted=0", (row["id"],)).fetchone():
+            if not db.execute("SELECT 1 FROM records r WHERE r.id=? AND r.deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)", (row["id"],)).fetchone():
                 return
             for (start,end,_), vector in zip(chunks,normalized):
                 vector = self.np.asarray(vector, dtype=self.np.float32)
@@ -192,6 +198,8 @@ class SemanticIndex:
                                  (self.key,row["id"],start,end,vector.tobytes()))
                 additions.append({"id":cur.lastrowid,"record_id":row["id"],"start":start,"end":end,"vector":vector.tobytes()})
             db.execute("INSERT OR IGNORE INTO vector_done VALUES(?,?)", (self.key,row["id"]))
+            db.execute("INSERT OR REPLACE INTO processing_readiness VALUES(?,?,?,?,?)",
+                       (row['id'],'semantic','ready',None,now()))
         for addition in additions:
             self._add(addition)
 
@@ -223,9 +231,9 @@ class SemanticIndex:
 
     def status(self):
         with self.store.connect() as db:
-            remaining = db.execute("""SELECT count(*) FROM records r WHERE deleted=0 AND NOT EXISTS(
+            remaining = db.execute("""SELECT count(*) FROM records r WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1) AND NOT EXISTS(
                 SELECT 1 FROM vector_done d WHERE d.model=? AND d.record_id=r.id)""", (self.key,)).fetchone()[0]
-            failures=db.execute("SELECT count(*) FROM vector_failures f JOIN records r ON r.id=f.record_id WHERE f.model=? AND r.deleted=0",(self.key,)).fetchone()[0]
+            failures=db.execute("SELECT count(*) FROM vector_failures f JOIN records r ON r.id=f.record_id WHERE f.model=? AND r.deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)",(self.key,)).fetchone()[0]
         return {"enabled":True,"model_key":self.key,"failed_records":failures,"index":"hnsw" if self.hnsw else "exact_numpy",
                 "pending_records":remaining,"ready":remaining==0 and self.last_error is None,
                 "error":self.last_error}

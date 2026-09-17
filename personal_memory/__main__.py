@@ -15,10 +15,27 @@ def settings(home):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Personal Memory service and Hermes setup")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("setup", "serve", "status", "import-jsonl", "import-whatsapp", "import-email", "import-health", "forget", "coverage", "rollback", "doctor", "backup-keygen", "backup", "restore", "request", "sync-hermes-history", "sync-hermes-files", "export-native-skill", "attach", "reset", "prune-hindsight"):
+    for name in ("setup", "serve", "status", "import-jsonl", "import-whatsapp", "import-email", "import-health", "forget", "coverage", "rollback", "doctor", "backup-keygen", "backup", "restore", "request", "sync-hermes-history", "sync-hermes-files", "export-native-skill", "attach", "reset", "prune-hindsight", "gmail-authorize", "gmail-connect", "sources-status", "sources-control", "awareness-run"):
         p = sub.add_parser(name)
         p.add_argument("--hermes-home", default=os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
-        if name == "setup":
+        if name == 'gmail-authorize':
+            p.add_argument('--client-secret',type=Path,required=True)
+            p.add_argument('--credentials-file',type=Path,required=True,help='Private output file outside the repository')
+        elif name == 'gmail-connect':
+            p.add_argument('--credentials-file',type=Path,required=True)
+            p.add_argument('--after',help='Optional YYYY-MM-DD cutoff; omitted imports all accessible history')
+            p.add_argument('--retention',choices=['archive','mirror'],default='archive')
+            p.add_argument('--poll-seconds',type=int,default=300)
+        elif name == 'sources-status':
+            p.add_argument('--connection-id')
+        elif name == 'sources-control':
+            p.add_argument('action',choices=['pause','resume','disconnect','retry'])
+            p.add_argument('--connection-id',required=True)
+        elif name == 'awareness-run':
+            p.add_argument('--consumer-id',required=True)
+            p.add_argument('--continuous',action='store_true',help='Poll for work and process batches continuously')
+            p.add_argument('--poll-seconds',type=int,default=60)
+        elif name == "setup":
             p.add_argument("--port", type=int, default=8766)
             p.add_argument("--exclusive", action="store_true", help="Disable built-in memory files without deleting them")
             p.add_argument("--auto-consolidate",action="store_true",help="Enable local extractive consolidation of imported records")
@@ -79,7 +96,50 @@ def main(argv=None):
             p.add_argument("--through-at")
             p.add_argument("--note", default="")
     args = parser.parse_args(argv)
-    if args.command == "setup":
+    if args.command == 'gmail-authorize':
+        from .gmail_oauth import authorize
+        from .common import atomic_json
+        credentials=authorize(args.client_secret)
+        atomic_json(args.credentials_file,credentials)
+        args.credentials_file.chmod(0o600)
+        result={'authorized':True,'credentials_file':str(args.credentials_file),'scope':'Gmail read-only'}
+    elif args.command == 'awareness-run':
+        from .awareness_worker import process_once, hermes_analyze
+        from .backend import load_backend
+        from .store import Store
+        from .storage import database_path
+        if not 5<=args.poll_seconds<=3600:raise ValueError('Poll interval must be 5..3600 seconds')
+        cfg=settings(args.hermes_home)
+        store=Store(database_path(cfg['data_dir'],'memory'))
+        retrieval=None
+        def current_retrieval():
+            nonlocal retrieval
+            if retrieval is None:
+                retrieval=load_backend(store,config=cfg.get('retrieval'))
+            return retrieval
+        if args.continuous:
+            import time
+            try:
+                while True:
+                    outcome=process_once(store,consumer_id=args.consumer_id,
+                                         analyze=hermes_analyze,retrieval=current_retrieval)
+                    if outcome['state']!='complete':time.sleep(args.poll_seconds)
+            except KeyboardInterrupt:
+                result={'state':'stopped'}
+        else:
+            result=process_once(store,consumer_id=args.consumer_id,analyze=hermes_analyze,
+                                retrieval=current_retrieval)
+    elif args.command in {'gmail-connect','sources-status','sources-control'}:
+        cfg=settings(args.hermes_home)
+        client=Client(cfg['url'],cfg['token'],timeout=120)
+        if args.command=='gmail-connect':
+            result=client.call('/v1/sources/gmail/connect',{'credentials':json.loads(args.credentials_file.read_text()),
+                'after':args.after,'retention':args.retention,'poll_seconds':args.poll_seconds})
+        elif args.command=='sources-status':
+            result=client.call('/v1/sources/status',{'connection_id':args.connection_id})
+        else:
+            result=client.call('/v1/sources/control',{'connection_id':args.connection_id,'action':args.action})
+    elif args.command == "setup":
         result = install(args.hermes_home, args.port, args.exclusive)
         if args.auto_consolidate:
             from .common import atomic_json

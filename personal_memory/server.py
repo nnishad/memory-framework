@@ -13,14 +13,15 @@ LOG = logging.getLogger(__name__)
 MAX_BODY = 2 * 1024 * 1024
 
 
-def create_server(data_dir, token, host="127.0.0.1", port=8766, backend=None, retrieval_config=None):
+def create_server(data_dir, token, host="127.0.0.1", port=8766, backend=None, retrieval_config=None, source_config=None, source_adapters=()):
     if host not in {"127.0.0.1", "localhost"}:
         raise ValueError("This reference server only binds IPv4 loopback")
     if not isinstance(token, str) or len(token) < 32:
         raise ValueError("An authentication token of at least 32 characters is required")
     from .service import MemoryService, AccessDenied
     from .asgi import strict_json
-    service = MemoryService(data_dir,token,retrieval_config,backend)
+    service = MemoryService(data_dir,token,retrieval_config,backend,source_config=source_config,
+                            source_adapters=source_adapters)
     store, retrieval, routes = service.store, service.retrieval, service.routes
 
     class Handler(BaseHTTPRequestHandler):
@@ -86,6 +87,7 @@ def create_server(data_dir, token, host="127.0.0.1", port=8766, backend=None, re
             super().server_close()
     server = Server((host, port), Handler)
     server.store = store
+    server.service = service
     server.retrieval = retrieval
     server.daemon_threads = True
     return server

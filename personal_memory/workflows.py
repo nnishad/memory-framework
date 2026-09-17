@@ -234,18 +234,37 @@ class Workflows:
         result=run_adapter(adapter['entrypoint'],adapter.get('config',{}),{'evidence':evidence,'known_entities':entities},self.timeout)
         if not isinstance(result,dict) or set(result)-{'summary','quotes','proposals'} or not {'summary','quotes'}<=set(result):raise ValueError('Consolidator must return summary, quotes and optional proposals')
         required_text(result['summary'],'summary',12000)
+        supplied={}
+        for segment in evidence:supplied.setdefault(segment['record_id'],[]).append(segment['text'])
+        def validate_supplied_quotes(quotes):
+            if not isinstance(quotes,list):raise ValueError('Evidence quotes must be an array')
+            for quote in quotes:
+                if (not isinstance(quote,dict) or set(quote)!={'record_id','quote'} or
+                        not isinstance(quote['record_id'],str) or
+                        not isinstance(quote['quote'],str) or not quote['quote'] or
+                        not any(quote['quote'] in text for text in supplied.get(quote['record_id'],[]))):
+                    raise ValueError('Quote must occur within supplied evidence spans')
+        validate_supplied_quotes(result['quotes'])
         from .intelligence import Intelligence
         with self.store.connect() as db:
-            refs=Intelligence(self.store)._quote(db,result['quotes'])
-            if set(refs)-set(snapshot['payload']['record_ids']):raise ValueError('Consolidator referenced evidence outside snapshot')
+            intelligence=Intelligence(self.store)
+            snapshot_records=set(snapshot['payload']['record_ids'])
+            refs=intelligence._quote(db,result['quotes'])
+            if set(refs)-snapshot_records:raise ValueError('Consolidator referenced evidence outside snapshot')
             proposals=result.get('proposals',[])
             if not isinstance(proposals,list) or len(proposals)>32:raise ValueError('At most 32 structured proposals')
             from .intelligence import scalar
+            accepted=[]
             for proposal in proposals:
-                if not isinstance(proposal,dict) or set(proposal)!={'subject_id','predicate','value','evidence'}:raise ValueError('Invalid structured proposal')
-                Intelligence(self.store)._entity(db,proposal['subject_id']);required_text(proposal['predicate'],'predicate',200);scalar(proposal['value'])
-                if set(Intelligence(self.store)._quote(db,proposal['evidence']))-set(snapshot['payload']['record_ids']):raise ValueError('Proposal evidence outside snapshot')
-        return {'kind':'consolidation','payload':{**result,'snapshot_id':snapshot['id'],'adapter_digest':digest(adapter),'status':'unverified_summary','segments':job['payload']['segments'],'coverage':'Only the explicit source spans in this job; canonical originals remain complete'},'parents':[snapshot['id']]}
+                try:
+                    if not isinstance(proposal,dict) or set(proposal)!={'subject_id','predicate','value','evidence'}:raise ValueError('Invalid structured proposal')
+                    validate_supplied_quotes(proposal['evidence'])
+                    intelligence._entity(db,proposal['subject_id']);required_text(proposal['predicate'],'predicate',200);scalar(proposal['value'])
+                    if set(intelligence._quote(db,proposal['evidence']))-snapshot_records:raise ValueError('Proposal evidence outside snapshot')
+                except (ValueError,KeyError,TypeError):
+                    continue
+                accepted.append(proposal)
+        return {'kind':'consolidation','payload':{**result,'proposals':accepted,'rejected_proposals':len(proposals)-len(accepted),'snapshot_id':snapshot['id'],'adapter_digest':digest(adapter),'status':'unverified_summary','segments':job['payload']['segments'],'coverage':'Only the explicit source spans in this job; canonical originals remain complete'},'parents':[snapshot['id']]}
 
     def accept_consolidation(self,*,result_id,actor):
         # Independent administrative review publishes attributed inferred beliefs.

@@ -85,6 +85,12 @@ class PersonalMemoryProvider(MemoryProvider):
         # fingerprint; on_pre_compress bumps the epoch so still-relevant evidence rehydrates.
         self.exposure = {}
         self.started_inputs = {}
+        # Awareness is opt-in per deployment; a supplied packet is tracked per session so only
+        # the host's request-assembled hook can acknowledge actual exposure.
+        self.awareness_enabled = False
+        self.awareness_consumer = "hermes-foreground"
+        self.awareness_turn = {}
+        self.awareness_pending = {}
 
     @property
     def name(self):
@@ -120,6 +126,11 @@ class PersonalMemoryProvider(MemoryProvider):
         if type(wait_ms) not in {int,float} or not 0<=wait_ms<=2000:
             raise ValueError("prefetch_wait_ms must be 0..2000")
         self.prefetch_wait_seconds=wait_ms/1000
+        awareness_cfg=settings.get("awareness",{})
+        if not isinstance(awareness_cfg,dict):
+            raise ValueError("awareness must be an object")
+        self.awareness_enabled=bool(awareness_cfg.get("enabled",False))
+        self.awareness_consumer=str(awareness_cfg.get("consumer_id","hermes-foreground"))
         self.client = Client(settings["url"], settings.get("agent_token",settings["token"]), timeout=30)
         self.health_client = Client(settings["url"],settings.get("agent_token",settings["token"]),timeout=0.2)
         try: self.memory_epoch = self.client.call('/v1/epoch')['epoch']
@@ -295,11 +306,62 @@ class PersonalMemoryProvider(MemoryProvider):
             # Every candidate row is still retained in this session's prompt. Avoid appending
             # another empty memory envelope on each subsequent turn.
             if not count and payload.get("already_in_context"):
-                return ""
+                result=""
             if count:
                 self.mark_injected(payload,sid)
                 self.last_recall_status=RecallStatus(provider_label="Personal Memory",count=count)
-        return result
+        if not self.client or self.closed or not query.strip():
+            return result
+        # Awareness refreshes independently of the query cache: a repeated question can still
+        # surface new arrivals, and a suppressed envelope never hides a pending packet.
+        return result + self._awareness_block(session_id or self.session_id)
+
+    def _awareness_block(self, sid):
+        """Bounded next-turn awareness packet appended to the recall hint. Supplying it is
+        recorded server-side as 'supplied' only; exposure lands via request_assembled."""
+        if not self.awareness_enabled or self.access_allowed is not True or self.agent_context != "primary":
+            return ""
+        try:
+            packet = self.client.call("/v1/awareness/prepare",
+                                      {"consumer_id": self.awareness_consumer, "session_id": sid})
+        except Exception as error:
+            LOG.info("Awareness prepare failed (%s); continuing without a packet", type(error).__name__)
+            return ""
+        if not packet.get("groups"):
+            return ""
+        with self.lock:
+            self.awareness_pending[sid] = {"packet_id": packet["packet_id"],
+                                           "turn": self.awareness_turn.get(sid)}
+        bounded = {key: packet[key] for key in
+                   ("packet_id", "groups", "omitted_groups", "estimated_tokens", "token_estimate",
+                    "untrusted")}
+        bounded["turn"] = self.awareness_turn.get(sid)
+        return ("\n\nUntrusted personal memory awareness packet (change metadata only; not verified"
+                " understanding; resolve evidence through search/evidence tools):\n"
+                + json.dumps(bounded, ensure_ascii=False))
+
+    def _confirm_awareness_exposure(self, payload):
+        """The host proves the packet went into an actual model request. Older hosts never
+        call this hook; their supplied receipts stay visible as an explicit exposure gap."""
+        pending = self.awareness_pending.get(self.session_id)
+        if not pending or not self.client:
+            return {'state': 'idle'}
+        request = payload.get('request') if isinstance(payload, dict) else None
+        if request is not None and pending['packet_id'] not in json.dumps(request, default=str):
+            return {'state': 'not_in_request'}
+        turn_id = payload.get('turn_id') if isinstance(payload, dict) else None
+        if turn_id is not None and pending.get("turn") is not None \
+                and str(turn_id) != str(pending["turn"]):
+            return {'state': 'stale'}
+        turn_id = str(turn_id if turn_id is not None else pending.get("turn") or "unspecified")
+        try:
+            result = self.client.call('/v1/awareness/exposed',
+                                      {'packet_id': pending['packet_id'], 'session_id': self.session_id,
+                                       'turn_id': turn_id})
+        except Exception as error:
+            return {'state': 'failed', 'reason': type(error).__name__}
+        return {'state': 'confirmed', 'packet_id': pending['packet_id'],
+                'recorded': result['recorded'], 'already': result['already']}
 
     def recall_status(self):
         return self.last_recall_status
@@ -827,8 +889,12 @@ class PersonalMemoryProvider(MemoryProvider):
 
     @traced("provider.host_event", _hook_detail)
     def on_host_event(self, event, payload):
-        if event not in {'review_change', 'skill_change', 'cron_completed', 'turn_interrupted'}:
+        if event not in {'review_change', 'skill_change', 'cron_completed', 'turn_interrupted',
+                         'request_assembled'}:
             raise ValueError('Unsupported host memory event')
+        if event == 'request_assembled':
+            # Optional host hook: acknowledgment only; it never captures or reasons.
+            return self._confirm_awareness_exposure(payload)
         if not self.outbox or self.agent_context != 'primary': return {'state':'disabled'}
         payload = copy.deepcopy(payload)
         if not isinstance(payload, dict): raise ValueError('Host event requires an object')
@@ -874,6 +940,7 @@ class PersonalMemoryProvider(MemoryProvider):
         return {'state':'queued'}
 
     def on_turn_start(self, turn_number, message, **kwargs):
+        self.awareness_turn[self.session_id] = str(turn_number)
         captured = self._capture_event("hermes-input", f"turn/{turn_number}/" + digest(message),
             {"user": message}, {"session_id": self.session_id, "completion": "started", "attribution": "user"})
         if captured and self.outbox:

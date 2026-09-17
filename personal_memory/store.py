@@ -83,6 +83,12 @@ class Store(Catalog):
             db.executescript(WORKFLOW_SCHEMA)
             from .curated import SCHEMA as CURATED_SCHEMA
             db.executescript(CURATED_SCHEMA)
+            from .source_sync import SCHEMA as SOURCE_SYNC_SCHEMA
+            db.executescript(SOURCE_SYNC_SCHEMA)
+            from . import changes
+            changes.ensure(db)
+            from . import awareness
+            awareness.ensure(db)
             for target in ("memory", "user"):
                 db.execute("INSERT OR IGNORE INTO curated_heads VALUES(?,0,?)", (target, now()))
             db.execute("CREATE INDEX IF NOT EXISTS knowledge_subject ON learning_objects(kind,state,json_extract(payload,'$.subject_id'))")
@@ -184,45 +190,67 @@ class Store(Catalog):
                 if current==checkpoint["cursor"] and old_cursor and old_cursor[1]!=batch_hash:
                     raise ValueError("A committed checkpoint cannot be reused for a different batch")
             for item in items:
-                if not isinstance(item, dict):
-                    raise ValueError("record must be an object")
-                source = required_text(item.get("source"), "source", 200)
-                source_id = required_text(item.get("source_id"), "source_id", 1000)
-                if self.deletions.contains(self.source_key(source, source_id)):
-                    raise ValueError("Source item was forgotten across all revisions")
-                revision = required_text(item.get("revision", "1"), "revision", 200)
-                text = required_text(item.get("text"), "text")
-                when = "" if item.get("_contract") and item.get("occurred_at") is None else timestamp(item.get("occurred_at"))
-                kind = required_text(item.get("kind", "episode"), "kind", 100)
-                metadata = item.get("metadata", {})
-                if not isinstance(metadata, dict):
-                    raise ValueError("metadata must be an object")
-                fingerprint = digest([when, kind, text, metadata])
-                old = db.execute("SELECT id,fingerprint,deleted FROM records WHERE source=? AND source_id=? AND revision=?",
-                                 (source, source_id, revision)).fetchone()
-                if old:
-                    if old["deleted"]:
-                        raise ValueError("Record was forgotten; reimport is blocked for this source ID/revision")
-                    if old["fingerprint"] != fingerprint:
-                        raise ValueError("Source ID/revision already exists with different content; increment revision")
-                    self._receipt(db,old["id"],item.get("_contract"))
-                    results.append({"id": old["id"], "duplicate": True})
-                    continue
-                rid = "rec_" + digest([source, source_id, revision])[:32]
-                if self.deletions.contains(rid):raise ValueError("Record ID/revision was previously forgotten")
-                db.execute("INSERT INTO records(id,source,source_id,revision,occurred_at,ingested_at,kind,text,metadata,fingerprint) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                           (rid, source, source_id, revision, when, now(), kind, text,
-                            json.dumps(metadata, ensure_ascii=False), fingerprint))
-                db.execute("INSERT INTO record_fts(id,text) VALUES(?,?)", (rid, text))
-                self._participants(db, rid, metadata, source)
-                self._receipt(db,rid,item.get("_contract"))
-                db.execute("INSERT OR IGNORE INTO sources VALUES(?, 'unknown', NULL, '', ?)", (source, now()))
-                self.audit(db, "ingest", rid)
-                results.append({"id": rid, "duplicate": False})
+                prior = [row[0] for row in db.execute(
+                    "SELECT id FROM records WHERE source=? AND source_id=? AND deleted=0",
+                    (item["source"], item["source_id"]))]
+                applied = self._apply_ingest_item(db, item)
+                results.append(applied)
+                if not applied["duplicate"]:
+                    from . import changes
+                    contract = item.get("_contract") or {}
+                    provenance = contract.get("provenance") or {}
+                    changes.append(
+                        db, connection_id="direct:" + str(provenance.get("connector_id") or "import"),
+                        source=item["source"], stream="direct", partition="", generation=1,
+                        source_item_id=item["source_id"],
+                        kind="content_updated" if prior else "created", origin_mode="backfill",
+                        record_ids=[applied["id"]], previous_record_ids=prior,
+                        coordinates={"arrival": "historical"}, occurred_at=item.get("occurred_at"))
             if checkpoint is not None:
                 db.execute("INSERT INTO connector_checkpoints VALUES(?,?,?,?,?) ON CONFLICT(connector_id,source) DO UPDATE SET cursor=excluded.cursor,updated_at=excluded.updated_at,batch_hash=excluded.batch_hash",
                            (checkpoint["connector_id"],checkpoint["source"],raw_cursor,now(),batch_hash))
         return {"records": results,"checkpoint_committed":checkpoint is not None}
+
+    def _apply_ingest_item(self, db, item):
+        """Write one normalized ingest item inside the caller's transaction.
+
+        Shared by the public ingest API and the source-sync atomic page commit;
+        neither path may call the other in a nested committing transaction.
+        """
+        if not isinstance(item, dict):
+            raise ValueError("record must be an object")
+        source = required_text(item.get("source"), "source", 200)
+        source_id = required_text(item.get("source_id"), "source_id", 1000)
+        if self.deletions.contains(self.source_key(source, source_id)):
+            raise ValueError("Source item was forgotten across all revisions")
+        revision = required_text(item.get("revision", "1"), "revision", 200)
+        text = required_text(item.get("text"), "text")
+        when = "" if item.get("_contract") and item.get("occurred_at") is None else timestamp(item.get("occurred_at"))
+        kind = required_text(item.get("kind", "episode"), "kind", 100)
+        metadata = item.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise ValueError("metadata must be an object")
+        fingerprint = digest([when, kind, text, metadata])
+        old = db.execute("SELECT id,fingerprint,deleted FROM records WHERE source=? AND source_id=? AND revision=?",
+                         (source, source_id, revision)).fetchone()
+        if old:
+            if old["deleted"]:
+                raise ValueError("Record was forgotten; reimport is blocked for this source ID/revision")
+            if old["fingerprint"] != fingerprint:
+                raise ValueError("Source ID/revision already exists with different content; increment revision")
+            self._receipt(db,old["id"],item.get("_contract"))
+            return {"id": old["id"], "duplicate": True}
+        rid = "rec_" + digest([source, source_id, revision])[:32]
+        if self.deletions.contains(rid):raise ValueError("Record ID/revision was previously forgotten")
+        db.execute("INSERT INTO records(id,source,source_id,revision,occurred_at,ingested_at,kind,text,metadata,fingerprint) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (rid, source, source_id, revision, when, now(), kind, text,
+                    json.dumps(metadata, ensure_ascii=False), fingerprint))
+        db.execute("INSERT INTO record_fts(id,text) VALUES(?,?)", (rid, text))
+        self._participants(db, rid, metadata, source)
+        self._receipt(db,rid,item.get("_contract"))
+        db.execute("INSERT OR IGNORE INTO sources VALUES(?, 'unknown', NULL, '', ?)", (source, now()))
+        self.audit(db, "ingest", rid)
+        return {"id": rid, "duplicate": False}
 
     def checkpoint(self,connector_id,source):
         with self.connect() as db:
@@ -261,6 +289,9 @@ class Store(Catalog):
             def descendants(root):
                 return {r[0] for r in db.execute('WITH RECURSIVE d(id) AS (SELECT ? UNION SELECT child_id FROM record_dependencies JOIN d ON parent_id=d.id) SELECT id FROM d',(root,))}
             hidden=descendants(record_id)-(descendants(replacement_id) if replacement_id else set())
+            from . import awareness
+            for rid in hidden:
+                awareness.invalidate_record(db, rid)
             db.executemany('INSERT OR REPLACE INTO record_visibility VALUES(?,1,?)',[(rid,replacement_id) for rid in hidden])
             self.audit(db,'supersede',record_id)
         return {'retired':record_id,'replacement_id':replacement_id,'hidden_records':len(hidden),'history_preserved':True}
@@ -465,6 +496,9 @@ class Store(Catalog):
             if journal:self.deletions.append(affected)
             ids=[]
             for rid in affected:
+                from . import awareness
+                awareness.invalidate_record(db, rid)
+                db.execute("DELETE FROM source_jobs WHERE json_extract(payload,'$.record_id')=?",(rid,))
                 from .learning import invalidate
                 invalidate(db,record_id=rid)
                 from .curated import invalidate as invalidate_curated

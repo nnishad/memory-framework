@@ -21,15 +21,23 @@ READ_PATHS.add("/v1/lineage/status")
 READ_PATHS.add("/v1/source/status")
 READ_PATHS.update({"/v1/learning/active","/v1/blob/list","/v1/blob/read"})
 READ_PATHS.add("/v1/curated/read")
+READ_PATHS.update({"/v1/changes/read", "/v1/awareness/status"})
 AGENT_WRITES={"/v1/ingest","/v1/entity","/v1/claim","/v1/identity","/v1/identity-revoke","/v1/learning/outcome","/v1/learning/propose"}
 AGENT_WRITES.update({'/v1/snapshot','/v1/belief','/v1/relation','/v1/measurement','/v1/task','/v1/task/transition','/v1/feedback'})
+AGENT_WRITES.update({"/v1/awareness/prepare", "/v1/awareness/exposed"})
+AWARENESS_QUEUE = {"/v1/awareness/claim", "/v1/awareness/complete", "/v1/awareness/defer"}
+
+
+def _lease(args):
+    """Rebuild a queue lease from call arguments; membership never travels back."""
+    return {field: args[field] for field in ("batch_id", "owner", "fence") if field in args}
 
 
 class AccessDenied(PermissionError): pass
 
 
 class MemoryService:
-    def __init__(self,data_dir,token,retrieval_config=None,backend=None,principals=None,extension_schemas=None,intelligence_config=None):
+    def __init__(self,data_dir,token,retrieval_config=None,backend=None,principals=None,extension_schemas=None,intelligence_config=None,source_config=None,source_adapters=()):
         if not isinstance(token,str) or len(token)<32: raise ValueError("Admin token must contain at least 32 characters")
         self.principals=[{"token":token,"role":"admin"}]+list(principals or [])
         seen=set()
@@ -40,7 +48,7 @@ class MemoryService:
             capabilities=principal.get('capabilities',[])
             if not isinstance(capabilities,list) or any(not isinstance(c,str) or not c for c in capabilities):raise ValueError('Capabilities must be an explicit list of names')
             if principal.get('role')=='executor' and not capabilities:raise ValueError('Executor requires explicit capabilities')
-            if principal.get("role") not in {"admin","agent","reader","ingest","evaluator","executor","scheduler"}: raise ValueError("Unsupported credential role")
+            if principal.get("role") not in {"admin","agent","reader","ingest","evaluator","executor","scheduler","awareness"}: raise ValueError("Unsupported credential role")
             if principal["role"]=="ingest" and (not isinstance(principal.get("sources"),list) or not principal["sources"] or
                     any(not isinstance(s,str) or not s for s in principal["sources"]) or
                     not isinstance(principal.get("connector_id"),str) or not principal["connector_id"]):
@@ -118,10 +126,35 @@ class MemoryService:
             '/v1/graph':lambda a:self.intelligence.graph(**a),'/v1/aggregate':lambda a:self.intelligence.aggregate(**a),
             '/v1/tasks':lambda a:self.intelligence.tasks(**a),'/v1/workflow':lambda a:self.workflows.get(**a),
             '/v1/quality':lambda a:{**self.intelligence.quality(),'workflows':self.workflows.status()}})
+        from .source_runtime import SourceRuntime
+        self.sources=SourceRuntime(self.store,data_dir,source_config,adapters=source_adapters)
+        self.routes.update({'/v1/sources/status':lambda a:self.sources.status(**a),
+                            '/v1/sources/gmail/connect':lambda a:self.sources.connect_gmail(**a),
+                            '/v1/sources/control':lambda a:self.sources.control(**a)})
+        from . import changes, awareness
+        self.routes['/v1/changes/read']=None  # credential-derived principal: handled in _dispatch
+        self.routes['/v1/awareness/configure']=None  # admin-only: handled in _dispatch
+        self.routes['/v1/awareness/status']=lambda a:awareness.status(self.store)
+        self.routes['/v1/awareness/claim']=lambda a:awareness.claim(self.store, **a)
+        self.routes['/v1/awareness/complete']=lambda a:awareness.complete(
+            self.store, _lease(a), summary=a.get('summary'),
+            citations=a.get('citations', ()), proposals=a.get('proposals', ()))
+        self.routes['/v1/awareness/defer']=lambda a:awareness.defer(
+            self.store, _lease(a), reason=a.get('reason', ''), retry_in=a.get('retry_in', 60))
+        self.routes['/v1/awareness/prepare']=lambda a:(awareness.sweep(self.store, a["consumer_id"]),
+                                                       awareness.prepare(self.store, **a))[1]
+        self.routes['/v1/awareness/exposed']=lambda a:awareness.expose(self.store, **a)
+        self.hub_reads['sources']='/v1/sources/status'
+        self.hub_reads['changes']='/v1/changes/read'
+        self.hub_reads['awareness_status']='/v1/awareness/status'
+        with self.store.connect() as db:
+            active=db.execute("SELECT 1 FROM source_connections WHERE state='active' LIMIT 1").fetchone()
+        if active:self.sources.start()
 
     def intelligence_schema(self):
         import inspect
         methods={**self.learning_routes,
+            '/v1/sources/status':self.sources.status,
             '/v1/beliefs':self.intelligence.beliefs,'/v1/graph':self.intelligence.graph,
             '/v1/aggregate':self.intelligence.aggregate,'/v1/tasks':self.intelligence.tasks,
             '/v1/workflow':self.workflows.get,'/v1/domain/coverage':self.intelligence.coverage,
@@ -132,11 +165,14 @@ class MemoryService:
         from . import blobs
         for name,fn in {'list':blobs.listing,'read':blobs.read,'begin':blobs.begin,'put':blobs.put,'complete':blobs.complete}.items():
             methods['/v1/blob/'+name]=partial(fn,self.store)
+        from . import awareness, changes
+        methods['/v1/changes/read']=partial(changes.read,self.store)
+        methods['/v1/awareness/status']=partial(awareness.status,self.store)
         result={}
         for path,method in methods.items():
             required=[];optional={}
             for name,parameter in inspect.signature(method).parameters.items():
-                if name=='actor':continue
+                if name in {'actor','principal'}:continue
                 if parameter.default is inspect.Parameter.empty:required.append(name)
                 else:optional[name]=parameter.default
             result[path]={'required':required,'optional_defaults':optional,'additional_parameters':False}
@@ -152,9 +188,11 @@ class MemoryService:
     def authorize(self,principal,path,args):
         role=principal["role"]
         if role=="admin":return
+        if path=='/v1/sources/status' and role in {'agent','reader'}:return
         if role=="agent" and path=="/v1/curated/apply":return
         if role=="evaluator" and path in READ_PATHS|{"/v1/learning/evaluate"}:return
         if role=='scheduler' and path in {'/v1/tasks','/v1/task/event/claim','/v1/task/event/ack'}:return
+        if role=='awareness' and path in AWARENESS_QUEUE:return
         if role in {'agent','executor'} and path=='/v1/procedure/execute':
             with self.store.connect() as db:
                 procedure=self.learning._get(db,args.get('procedure_id'),'procedure')
@@ -279,6 +317,16 @@ class MemoryService:
                 from .common import digest
                 fn=curated.apply if path.endswith("/apply") else curated.reset
                 return fn(self.store, **args, actor=digest(principal["token"]))
+            if path=="/v1/changes/read":
+                from .common import digest
+                if "principal" in args:raise ValueError("Principal is credential-derived")
+                from . import changes
+                return changes.read(self.store,principal=digest(principal["token"]),**args)
+            if path=="/v1/awareness/configure":
+                from . import awareness, changes
+                if "journal" in args:return changes.configure(self.store,args)
+                if "replay" in args:return awareness.replay(self.store,**args["replay"])
+                return awareness.configure_consumer(self.store,**args)
             if path in self.learning_routes:
                 if 'actor' in args:raise ValueError('Actor is credential-derived')
                 from .common import digest
@@ -296,10 +344,17 @@ class MemoryService:
         result["capabilities"]=list(dict.fromkeys(result.get("capabilities",[])+[
             "parallel_investigation", "capture_lineage", "source_revision_forgetting", "native_history_sync",
             "native_state_catalog", "native_file_sync", "run_bound_continuity", "evaluated_skill_export",
-            "resumable_attachments", "journaled_reset"]))
+            "resumable_attachments", "journaled_reset", "source_adapters", "gmail_history_sync", "gmail_incremental_sync"]))
         result["capabilities"]=list(dict.fromkeys(result["capabilities"]+[
             "canonical_curated_memory", "versioned_native_memory_edits",
             "frozen_curated_prompt_snapshot", "durable_observation_receipts"]))
+        from . import changes
+        result["capabilities"]=list(dict.fromkeys(result["capabilities"]+[
+            "memory_change_journal", "awareness_api"]))
+        result["change_journal"]=changes.status(self.store)
+        result["change_contract"]={"version":"1.0","read":"/v1/changes/read","configure":"/v1/awareness/configure",
+            "cursors":"opaque; scoped to credential, filter digest and memory epoch",
+            "acknowledgment":"reads never acknowledge; consumer leases land with awareness consumers"}
         result["native_memory_contract"]={"version":"1.0","targets":["memory","user"],
             "read":"/v1/curated/read","apply":"/v1/curated/apply","reset":"/v1/curated/reset",
             "concurrency":"expected_version","reset_fence":"epoch","batch":"atomic"}
@@ -326,6 +381,7 @@ class MemoryService:
                 "workflows":self.workflows.status(),"meaning":"Configured service is operational; this does not certify source completeness or retrieval quality."}
 
     def close(self):
+        self.sources.close()
         self.workflows.close()
         self.investigation.close()
         if hasattr(self.retrieval,"close"):self.retrieval.close()

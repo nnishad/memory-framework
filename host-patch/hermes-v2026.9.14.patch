@@ -628,6 +628,52 @@ index 3fc5f6b8b5..77f36ebeb3 100644
  def _run_agent_tool_execution_middleware(
      agent,
      *,
+diff --git a/agent/turn_api_call.py b/agent/turn_api_call.py
+index 379a5e4509..6c748fa85f 100644
+--- a/agent/turn_api_call.py
++++ b/agent/turn_api_call.py
+@@ -66,6 +66,7 @@ def perform_api_call(
+ ) -> ApiCallVerdict:
+     """Issue the request (see ``_should_stream`` for the streaming decision)."""
+     response = None
++    sent_kwargs = None
+ 
+     def _verdict(action: str) -> ApiCallVerdict:
+         return ApiCallVerdict(
+@@ -80,11 +81,13 @@ def perform_api_call(
+     _use_streaming = _should_stream(agent)
+ 
+     def _perform_api_call(next_api_kwargs):
++        nonlocal sent_kwargs
+         if agent.api_mode == "codex_responses":
+             next_api_kwargs = agent._get_transport().preflight_kwargs(
+                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
+                 sanitize_harmony_tokens=agent._is_codex_backend(),
+             )
++        sent_kwargs = next_api_kwargs
+         if _use_streaming:
+             return agent._interruptible_streaming_api_call(
+                 next_api_kwargs, on_first_delta=_stop_spinner
+@@ -138,6 +141,19 @@ def perform_api_call(
+                 bool(agent._pending_redirect) if _redirect_lock is not None
+                 else agent._has_pending_redirect()
+             )
++    # The response proves that this assembled request reached a model. Keep the
++    # callback after the send so preparation alone cannot acknowledge exposure.
++    # A failed memory callback must not replay an already successful model call.
++    if response is not None and sent_kwargs is not None:
++        try:
++            from agent.memory_bridge import emit
++            emit(agent, "request_assembled", {
++                "turn_id": str(getattr(agent, "_user_turn_count", "")),
++                "api_request_id": api_request_id,
++                "request": sent_kwargs,
++            })
++        except Exception:
++            logger.warning("Memory request exposure acknowledgment failed", exc_info=True)
+     if _redirect_crossed_response:
+         # Response and redirect can cross threads: discard the now-stale
+         # response and rebuild from the correction rather than lose it.
 diff --git a/cli.py b/cli.py
 index 8930152446..bcf616af0f 100644
 --- a/cli.py
@@ -741,10 +787,19 @@ index 12fc7954c8..a5aee15f54 100644
          return ""
      if not notes:
 diff --git a/cron/scheduler.py b/cron/scheduler.py
-index 3d745e1360..33972c9760 100644
+index 3d745e1360..2639541523 100644
 --- a/cron/scheduler.py
 +++ b/cron/scheduler.py
-@@ -2183,6 +2183,11 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
+@@ -425,6 +425,8 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
+     globally without recreating every job. 3. ``None`` on any lookup failure — AIAgent loads the full
+     default set (legacy behavior before this change, preserved as the safety net).
+     """
++    if job.get("_memory_awareness_read_only") is True:
++        return []  # evidence is supplied by the memory worker; no action tools
+     per_job = job.get("enabled_toolsets")
+     if per_job:
+         return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
+@@ -2183,6 +2185,11 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
  def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
      runtime = setup.runtime
      pr = _cfg.get("provider_routing") or {}
@@ -756,7 +811,13 @@ index 3d745e1360..33972c9760 100644
      return AIAgent(
          model=setup.model,
          api_key=runtime.get("api_key"),
-@@ -2214,6 +2219,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
+@@ -2209,11 +2216,12 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
+         # Project context files only with a configured workdir; SOUL.md always.
+         skip_context_files=not bool(workdir),
+         load_soul_identity=True,
+-        skip_memory=False,
++        skip_memory=job.get("_memory_awareness_read_only") is True,
+         skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
          platform="cron",
          session_id=session_id,
          session_db=session_db,
@@ -764,7 +825,7 @@ index 3d745e1360..33972c9760 100644
      )
  
  
-@@ -2308,6 +2314,10 @@ def run_job(
+@@ -2308,6 +2316,10 @@ def run_job(
          output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
          logger.info("Job '%s' completed successfully", job_name)
          _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
@@ -775,7 +836,7 @@ index 3d745e1360..33972c9760 100644
          return True, output, final_response, None
  
      except Exception as e:
-@@ -2666,6 +2676,9 @@ def _save_compose_deliver(
+@@ -2666,6 +2678,9 @@ def _save_compose_deliver(
      with fence.side_effect_fence() as owns_output:
          if not owns_output:
              raise _FireClaimLostDuringSideEffect
@@ -785,7 +846,7 @@ index 3d745e1360..33972c9760 100644
          output_file = save_job_output(job["id"], output)
      if verbose:
          logger.info("Output saved to: %s", output_file)
-@@ -2719,6 +2732,8 @@ def _save_compose_deliver(
+@@ -2719,6 +2734,8 @@ def _save_compose_deliver(
          with fence.side_effect_fence() as owns_delivery:
              if not owns_delivery:
                  raise _FireClaimLostDuringSideEffect
@@ -794,7 +855,7 @@ index 3d745e1360..33972c9760 100644
              d.delivery_attempted = True
              d.delivery_error = _deliver_result(
                  job,
-@@ -2943,6 +2958,7 @@ def _run_one_job_body(
+@@ -2943,6 +2960,7 @@ def _run_one_job_body(
          # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
          # raise anywhere still tears the deferred agent down.
          d = _RunDelivery(job=job, success=success, error=error)

@@ -57,6 +57,12 @@ accepts `url` (a compatible API base), `model`, optional `token` and `timeout` i
 It can propose structured beliefs using known source-linked entity IDs. The model cannot select
 a Python module or assign its own authority. Configuring an external endpoint authorizes that
 endpoint to receive the evidence needed for the configured operation.
+The adapter requests a strict JSON schema with the current known entity IDs. Compatible servers
+that reject this format fall back to JSON-object mode; a single Markdown JSON fence is also
+accepted for older local models. The worker still validates output independently. Set the
+worker `timeout` and adapter `config.timeout` to fit the chosen local model (the worker accepts
+at most 60 seconds and bounds the adapter process). Plain HTTP model URLs must use loopback;
+use HTTPS or a host-local loopback proxy for a model on another machine.
 
 `recall.planner` and `recall.reranker` take the same `entrypoint`/`config` declaration. Bundled
 `openai_plan` and `openai_rerank` use a compatible chat-completions endpoint. Planning yields at
@@ -133,8 +139,10 @@ advances only after all the source's spans have been queued. A crash before curs
 replays existing keys. Source completeness, queued spans and completed summaries are distinct.
 Summarization can omit details; original source content remains independently searchable.
 
-The worker validates the model's JSON shape, referenced identities, exact quotes and snapshot
-membership. Output is a pending `consolidation` object. `POST /v1/consolidation/accept` with
+The worker validates the model's JSON shape, referenced identities, exact quotes within the
+specific spans supplied to the model, and snapshot membership. An invalid individual proposal
+is omitted and counted in `rejected_proposals`; invalid top-level summary evidence fails the
+job. Output is a pending `consolidation` object. `POST /v1/consolidation/accept` with
 `result_id` is an administrative review step: it publishes proposed beliefs as inferred,
 unverified records and indexes the summary separately. Repeating the same review is idempotent.
 The model cannot classify its own proposal as observed, verified or executable.

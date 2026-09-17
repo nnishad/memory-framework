@@ -14,7 +14,7 @@ accuracy of an untested model, personal archive or deployment.
 
 | Layer | Implemented behavior |
 | --- | --- |
-| Ingestion | Required versioned core, namespaced extensions, immutable source revisions, provenance receipts, atomic batches/cursors, WhatsApp/email/health export adapters |
+| Ingestion | Required versioned core, namespaced extensions, immutable source revisions, provenance receipts, atomic batches/cursors, export adapters and Gmail historical/incremental ingestion |
 | Recall | Keyword/Hindsight plus default local multilingual embeddings, optional HNSW, temporal and identity filters, progressive rounds, default graph/recency ranking and best-effort cross-encoder reranking, optional model planner/reranker adapters, duplicate context suppression |
 | Knowledge | Quoted beliefs with conflicts and validity, contextual preferences, dated typed relationships, bounded graph traversal, reviewed episode summaries |
 | Measurements | Metric/unit validation, immutable custom metric definitions, explicit conversions and SQL aggregates |
@@ -25,6 +25,10 @@ accuracy of an untested model, personal archive or deployment.
 | Operations | Owner/session controls, scoped credentials, worker diagnostics/quarantine, logical forgetting, encrypted backup/isolated restore, native Hermes SQLite backup support |
 
 ## Fresh installation
+
+For Gmail OAuth setup, continuous ingestion, and the bounded Windows live test,
+see [Gmail ingestion](docs/GMAIL_INGESTION.md). The running memory service owns the
+sync worker; historical capture and new-mail polling have separate checkpoints.
 
 Use Python 3.11+ on Linux or macOS with SQLite FTS5 and the pinned Hermes release `v2026.9.14`.
 The service uses POSIX file locking; native Windows service deployment is not supported by
@@ -120,3 +124,32 @@ The [v2026.9.14 provider-contract audit](docs/HERMES_914_MEMORY_COVERAGE.md) map
 host hooks. The [earlier coverage audit](docs/HERMES_MEMORY_COVERAGE_AUDIT.md) preserves
 historical gaps; several have since been addressed by the host bridge. Hook coverage does
 not establish complete semantic forgetting or production qualification.
+
+## Awareness of incoming data
+
+The [memory awareness design and rollout plan](docs/MEMORY_AWARENESS_PLAN.md) covers the
+shared change journal, bounded next-turn packets, and durable background analysis.
+Awareness is opt-in: an administrator enables the journal and configures foreground
+and background consumers. The pinned Hermes patch acknowledges packets only after a
+successful model request includes them. Run `personal-memory awareness-run` on the
+Hermes host for background batches; ingestion itself does not start model runs.
+
+### Hermes integration requirements
+
+The release-pinned [Hermes patch](host-patch/hermes-v2026.9.14.patch) is required for
+full awareness behavior. It emits a `request_assembled` event only after Hermes has
+successfully sent a model request, which lets the memory service mark a foreground
+packet as exposed only when the packet truly reached the model. It also creates
+background awareness runs with action toolsets disabled and external memory injection
+skipped; the worker supplies bounded source evidence and optional related-memory
+retrieval itself.
+
+Apply the patch and deploy the framework together on the host that runs Hermes and
+the memory service. Then enable the change journal, configure the foreground and
+background consumers, and supervise `personal-memory awareness-run --continuous`.
+Adapters such as Gmail, WhatsApp, or health data need no Hermes-specific code: they
+write through the same source-sync and change-journal contract.
+
+The background worker persists delivery intent but does not yet dispatch owner
+notifications through a Hermes channel. It also needs a live model trial on the
+deployment host before enabling it for real personal data.

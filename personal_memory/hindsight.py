@@ -4,6 +4,7 @@ The remote engine ranks candidate documents. Its inferred facts never overwrite
 the canonical contact registry or bypass local tombstones and temporal filters.
 """
 import math
+import json
 import time
 from urllib.parse import quote
 
@@ -34,10 +35,10 @@ class Hindsight:
         with self.store.connect() as db:
             # Deletions take priority over new extraction. Local retrieval already
             # rejects deleted IDs while external deletion is pending or unavailable.
-            deleted = [r[0] for r in db.execute("SELECT d.record_id FROM (SELECT backend,record_id FROM hindsight_done UNION SELECT backend,record_id FROM hindsight_pending) d JOIN records r ON r.id=d.record_id WHERE backend=? AND deleted=1", (self.key,))]
+            deleted = [r[0] for r in db.execute("SELECT d.record_id FROM (SELECT backend,record_id FROM hindsight_done UNION SELECT backend,record_id FROM hindsight_pending) d JOIN records r ON r.id=d.record_id WHERE backend=? AND (r.deleted=1 OR EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1))", (self.key,))]
             scope="" if "*" in self.sources else " AND r.source IN ("+",".join("?" for _ in self.sources)+")"
             params=[self.key,self.key,time.time()]+([] if "*" in self.sources else self.sources)+[batch]
-            rows = [dict(r) for r in db.execute("""SELECT r.* FROM records r WHERE deleted=0 AND NOT EXISTS(
+            rows = [dict(r) for r in db.execute("""SELECT r.* FROM records r WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1) AND NOT EXISTS(
                 SELECT 1 FROM hindsight_done d WHERE d.backend=? AND d.record_id=r.id)
                 AND NOT EXISTS(SELECT 1 FROM hindsight_pending p WHERE p.backend=? AND p.record_id=r.id AND p.next_retry>?)
                 AND r.source!='hermes-lineage'
@@ -99,11 +100,16 @@ class Hindsight:
                            [(self.key,rid) for rid in ids])
             db.executemany("DELETE FROM hindsight_pending WHERE backend=? AND record_id=?",
                            [(self.key,rid) for rid in ids])
+            db.executemany("INSERT OR REPLACE INTO processing_readiness VALUES(?,?,?,?,?)",
+                           [(rid,'hindsight','ready',None,now()) for rid in ids])
 
     def _backoff(self, record_ids, error):
         with self.store.connect() as db:
             db.executemany("UPDATE hindsight_pending SET next_retry=?,error=? WHERE backend=? AND record_id=?",
                            [(time.time()+30,type(error).__name__,self.key,rid) for rid in record_ids])
+            db.executemany("INSERT OR REPLACE INTO processing_readiness VALUES(?,?,?,?,?)",
+                           [(rid,'hindsight','failed',
+                             json.dumps({'error':type(error).__name__}),now()) for rid in record_ids])
 
     def clear_bank(self):
         """Erase every memory unit, entity and document in the managed bank, then reset the
@@ -151,10 +157,10 @@ class Hindsight:
 
     def status(self):
         with self.store.connect() as db:
-            synced = db.execute("SELECT count(*) FROM hindsight_done d JOIN records r ON r.id=d.record_id WHERE backend=? AND deleted=0", (self.key,)).fetchone()[0]
-            deletion_pending = db.execute("SELECT count(*) FROM (SELECT backend,record_id FROM hindsight_done UNION SELECT backend,record_id FROM hindsight_pending) d JOIN records r ON r.id=d.record_id WHERE backend=? AND deleted=1", (self.key,)).fetchone()[0]
+            synced = db.execute("SELECT count(*) FROM hindsight_done d JOIN records r ON r.id=d.record_id WHERE backend=? AND deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)", (self.key,)).fetchone()[0]
+            deletion_pending = db.execute("SELECT count(*) FROM (SELECT backend,record_id FROM hindsight_done UNION SELECT backend,record_id FROM hindsight_pending) d JOIN records r ON r.id=d.record_id WHERE backend=? AND (r.deleted=1 OR EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1))", (self.key,)).fetchone()[0]
             scope="" if "*" in self.sources else " AND r.source IN ("+",".join("?" for _ in self.sources)+")"
-            pending=db.execute("SELECT count(*) FROM records r WHERE deleted=0 AND r.source!='hermes-lineage' AND NOT EXISTS(SELECT 1 FROM hindsight_done d WHERE d.backend=? AND d.record_id=r.id)"+scope,
+            pending=db.execute("SELECT count(*) FROM records r WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1) AND r.source!='hermes-lineage' AND NOT EXISTS(SELECT 1 FROM hindsight_done d WHERE d.backend=? AND d.record_id=r.id)"+scope,
                                [self.key]+([] if "*" in self.sources else self.sources)).fetchone()[0]
         return {"enabled":True,"synced_records":synced,"pending_records":pending,"pending_deletions":deletion_pending,
                 "source_scope":self.sources,"error":self.last_error,"runtime":self.runtime,
