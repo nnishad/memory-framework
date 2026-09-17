@@ -178,6 +178,13 @@ class SourceRuntime:
             db.execute('DELETE FROM source_schedule WHERE connection_id=?',(cid,))
             db.execute("INSERT INTO source_coverage(connection_id,stream,partition,generation,start,end,state,note,created_at) VALUES(?,'messages','',?,'unknown','unknown','gap','Expired Gmail history; rescan cannot recover permanently deleted mail',?)",(cid,row['generation']+1,now()))
 
+    def _in_backoff(self,cid,role):
+        # A schedule row carrying an error is a retry (or auth) backoff: durable
+        # signals may never shortcut it, only the ordinary polling delay.
+        with self.store.connect() as db:
+            row=db.execute('SELECT error FROM source_schedule WHERE connection_id=? AND role=?',(cid,role)).fetchone()
+        return row is not None and row[0] is not None
+
     def tick(self):
         if not self.tick_lock.acquire(blocking=False):return
         try:
@@ -188,6 +195,11 @@ class SourceRuntime:
                 adapter=self.sync.registry.get(connection['adapter_id'])
                 if adapter is None:
                     continue
+                # A durable signal is a request to check the source now. Read the
+                # high-water mark before any pass, so signals arriving during this
+                # tick survive acknowledgment of the work already covered.
+                signals=self.sync.take_signals(cid)
+                caught_up=False;pass_failed=False
                 streams=self._declarations(cid, connection, adapter)
                 if streams is None:continue
                 passes=[(stream['stream_id'], partition, role)
@@ -203,7 +215,12 @@ class SourceRuntime:
                     schedule_key=(role if connection['adapter_id']=='google.gmail'
                                   and stream=='messages' and not partition else
                                   json.dumps([stream,partition,role],separators=(',',':')))
-                    if not self._due(cid,schedule_key):continue
+                    if not self._due(cid,schedule_key):
+                        # Pending signals bypass the polling delay for one bounded
+                        # incremental pass; pause, auth parks and backoff still hold.
+                        if not (signals['count'] and role=='incremental'
+                                and not self._in_backoff(cid,schedule_key)):
+                            continue
                     state=self.sync.stream_state(cid,stream,partition=partition,role=role)
                     if role=='backfill' and (state['cursor'] or {}).get('done'):continue
                     if role=='reconcile':
@@ -217,25 +234,37 @@ class SourceRuntime:
                         result=self.worker.run_once(cid,stream=stream,partition=partition,role=role,ttl=900,declarations=streams)
                         status=result['status']
                         if status=='resync_required':
+                            if role=='incremental':pass_failed=True
                             if connection['adapter_id']=='google.gmail':
                                 self._recover_cursor(cid);continue
                             self._schedule(cid,schedule_key,3600,'Source cursor requires explicit rescan')
                             continue
                         if status in ('retry','failed','needs_auth'):
+                            if role=='incremental':pass_failed=True
                             self._schedule(cid,schedule_key,max(30,result.get('retry_after') or 60),result.get('reason','Source sync failed'))
                         else:
                             cursor=self.sync.stream_state(cid,stream,partition=partition,role=role)['cursor'] or {}
                             if role=='incremental' and not cursor.get('page') and not cursor.get('offset'):
+                                caught_up=True
                                 delay=connection['scope'].get('poll_seconds',300)
                             elif role=='reconcile' and cursor.get('done'):
                                 delay=connection['scope']['reconcile_seconds']
-                            else:delay=0
+                            else:
+                                if role=='incremental':caught_up=False  # still catching up
+                                delay=0
                             self._schedule(cid,schedule_key,delay)
                     except AdapterError as error:
+                        if role=='incremental':pass_failed=True
                         if error.kind=='auth':self.sync._set_state(cid,'needs_auth')
                         self._schedule(cid,schedule_key,60,error.message)
                     except Exception as error:
+                        if role=='incremental':pass_failed=True
                         self._schedule(cid,schedule_key,60,type(error).__name__+': source pass failed')
+                if signals['count'] and caught_up and not pass_failed:
+                    # Only a converged, fully successful incremental coverage of the
+                    # captured high-water mark acknowledges; everything after it
+                    # (including mid-pass arrivals) stays pending for the next pass.
+                    self.sync.ack_signals(cid,up_to=signals['up_to'])
                 if not self.stop.is_set():self._attachment(cid)
         finally:self.tick_lock.release()
 

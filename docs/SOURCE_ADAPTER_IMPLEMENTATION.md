@@ -474,6 +474,16 @@ bumps a per-stream `scan` counter folded into the deterministic `op_id`, so an
 explicit rescan of a changed snapshot commits new content instead of colliding
 with prior page receipts, while replay within one scan stays idempotent.
 
+Durable inbox signals now drive ingestion scheduling (source-neutral, role-based).
+Each supervisor tick captures one high-water mark per active connection before any
+pass. A non-empty mark bypasses the ordinary incremental polling delay for one
+bounded pass, but never a pause, an authentication park or a schedule row carrying
+a retry backoff. Acknowledgment happens only after a converged incremental pass
+with no failed incremental pass in the same tick, and only up to the captured
+mark, so repeated signals coalesce into one pass, multi-page catch-up defers
+acknowledgment until it completes, and a signal arriving during a pass survives
+to schedule its own follow-up. Failures leave every signal durably queued.
+
 Efficiency: 250+ records commit per internal transaction (not bound by the HTTP
 100 cap), WAL + `busy_timeout` already in `Store`, one transaction per page.
 Qualification: 2000 end-to-end records commit in ~0.42s (~4779 rec/s, 8
