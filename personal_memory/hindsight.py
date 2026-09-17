@@ -5,6 +5,7 @@ the canonical contact registry or bypass local tombstones and temporal filters.
 """
 import math
 import json
+import threading
 import time
 from urllib.parse import quote
 
@@ -26,12 +27,66 @@ class Hindsight:
         self.write_client = Client(self.url, config.get("token", ""), timeout=config.get("retain_timeout", 120))
         self.read_client = Client(self.url, config.get("token", ""), timeout=config.get("recall_timeout", 15))
         self.last_error = None
+        # One lifecycle lock serializes every state transition against the remote bank:
+        # retain batches, per-document deletions and the bulk clear a canonical reset
+        # cascades. Without it a reset could wipe the bank while a retain was in flight
+        # and the re-published documents would be orphaned by the already-cleared journal.
+        self.lifecycle_lock = threading.RLock()
         with store.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS hindsight_done(backend TEXT,record_id TEXT REFERENCES records(id),PRIMARY KEY(backend,record_id))")
 
             db.execute("CREATE TABLE IF NOT EXISTS hindsight_pending(backend TEXT,record_id TEXT REFERENCES records(id),next_retry REAL NOT NULL DEFAULT 0,error TEXT,PRIMARY KEY(backend,record_id))")
 
+            # Durable bank-clear obligation: persisted before the remote request, removed
+            # only after cleanup is confirmed, so a failure or restart resumes it.
+            db.execute("CREATE TABLE IF NOT EXISTS hindsight_bank_clear(backend TEXT PRIMARY KEY,epoch INTEGER NOT NULL DEFAULT 0,requested_at TEXT NOT NULL)")
+
+    def _epoch(self, db=None):
+        def read(conn):
+            row = conn.execute("SELECT value FROM memory_epoch WHERE id=1").fetchone() if \
+                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_epoch'").fetchone() else None
+            return row[0] if row else 0
+        if db is not None:
+            return read(db)
+        with self.store.connect() as conn:
+            return read(conn)
+
+    def _clear_pending(self, db=None):
+        def read(conn):
+            return conn.execute("SELECT 1 FROM hindsight_bank_clear WHERE backend=?", (self.key,)).fetchone() is not None
+        if db is not None:
+            return read(db)
+        with self.store.connect() as conn:
+            return read(conn)
+
+    def _perform_clear(self):
+        """Clear the bank and the local retain journal. Callers must hold lifecycle_lock.
+        The obligation is persisted before the remote request and local tracking is erased
+        only after the engine confirms cleanup, so any failure leaves resumable state."""
+        with self.store.connect() as db:
+            db.execute("INSERT OR REPLACE INTO hindsight_bank_clear(backend,epoch,requested_at) VALUES(?,?,?)",
+                       (self.key, self._epoch(db), now()))
+        try:
+            self.write_client.call(self.path + "/memories", method="DELETE", missing_ok=True)
+        except Exception as error:
+            self.last_error = type(error).__name__ + ": bank clear pending"
+            return {"cleared": False, "backend": self.key, "error": self.last_error}
+        with self.store.connect() as db:
+            db.execute("DELETE FROM hindsight_done WHERE backend=?", (self.key,))
+            db.execute("DELETE FROM hindsight_pending WHERE backend=?", (self.key,))
+            db.execute("DELETE FROM hindsight_bank_clear WHERE backend=?", (self.key,))
+        self.last_error = None
+        return {"cleared": True, "backend": self.key}
+
     def sync(self, batch=8):
+        with self.lifecycle_lock:
+            if self._clear_pending():
+                # An unfinished external cleanup outranks new extraction: nothing may
+                # be retained into a bank that is still owed to be emptied.
+                return 1 if self._perform_clear()["cleared"] else 0
+            return self._index_pass(batch)
+
+    def _index_pass(self, batch=8):
         with self.store.connect() as db:
             # Deletions take priority over new extraction. Local retrieval already
             # rejects deleted IDs while external deletion is pending or unavailable.
@@ -43,6 +98,7 @@ class Hindsight:
                 AND NOT EXISTS(SELECT 1 FROM hindsight_pending p WHERE p.backend=? AND p.record_id=r.id AND p.next_retry>?)
                 AND r.source!='hermes-lineage'
                 """+scope+" ORDER BY r.ingested_at,r.id LIMIT ?", params)]
+            selected_epoch = self._epoch(db)
         errors=[]
         for rid in deleted:
             try:
@@ -56,6 +112,24 @@ class Hindsight:
         if errors:
             self.last_error=errors[0]+": deletion pending"
             return 0
+        if rows:
+            # A reset or forget can tombstone selected records while this thread waits on
+            # the lifecycle lock or journals the batch. Recheck visibility and the memory
+            # epoch immediately before the remote request so forgotten evidence is never
+            # republished into a bank a reset has already (or is about to) clear.
+            ids = [row["id"] for row in rows]
+            with self.store.connect() as db:
+                live = {r[0] for r in db.execute(
+                    "SELECT id FROM records WHERE deleted=0 AND NOT EXISTS("
+                    "SELECT 1 FROM record_visibility z WHERE z.record_id=records.id AND z.hidden=1)"
+                    " AND id IN (" + ",".join("?" for _ in ids) + ")", ids)}
+                stale = [] if self._epoch(db) == selected_epoch else ids
+            dropped = stale or [rid for rid in ids if rid not in live]
+            if dropped:
+                with self.store.connect() as db:
+                    db.executemany("DELETE FROM hindsight_pending WHERE backend=? AND record_id=?",
+                                   [(self.key, rid) for rid in dropped])
+                rows = [row for row in rows if row["id"] not in set(dropped)]
         if rows:
             # Journal the complete batch before network I/O. One retain request avoids repeated
             # HTTP/LLM setup while a lost acknowledgement still leaves every document deletable.
@@ -117,19 +191,11 @@ class Hindsight:
         evidence in the external engine - including documents retained before the local store
         was rebuilt, which the per-record delete cascade can no longer see. The bank profile is
         preserved (Hindsight delete_bank_profile=False) so disposition/config survive. The local
-        SQLite store stays authoritative: a failed bulk clear is recorded, never raised, so the
-        reset still completes and local recall is already redacted.
+        SQLite store stays authoritative: a failed bulk clear persists the obligation, never
+        raises, so the reset still completes and the indexing worker retries the cleanup.
         """
-        try:
-            self.write_client.call(self.path + "/memories", method="DELETE", missing_ok=True)
-            with self.store.connect() as db:
-                db.execute("DELETE FROM hindsight_done WHERE backend=?", (self.key,))
-                db.execute("DELETE FROM hindsight_pending WHERE backend=?", (self.key,))
-            self.last_error = None
-            return {"cleared": True, "backend": self.key}
-        except Exception as error:
-            self.last_error = type(error).__name__ + ": bank clear pending"
-            return {"cleared": False, "backend": self.key, "error": self.last_error}
+        with self.lifecycle_lock:
+            return self._perform_clear()
 
     def candidates(self, query, depth, source=None):
         args = {"query":query,"types":["world","experience"],"budget":{"fast":"low","balanced":"mid","deep":"high"}[depth],
@@ -157,11 +223,13 @@ class Hindsight:
 
     def status(self):
         with self.store.connect() as db:
+            bank_clear_pending = self._clear_pending(db)
             synced = db.execute("SELECT count(*) FROM hindsight_done d JOIN records r ON r.id=d.record_id WHERE backend=? AND deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)", (self.key,)).fetchone()[0]
             deletion_pending = db.execute("SELECT count(*) FROM (SELECT backend,record_id FROM hindsight_done UNION SELECT backend,record_id FROM hindsight_pending) d JOIN records r ON r.id=d.record_id WHERE backend=? AND (r.deleted=1 OR EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1))", (self.key,)).fetchone()[0]
             scope="" if "*" in self.sources else " AND r.source IN ("+",".join("?" for _ in self.sources)+")"
             pending=db.execute("SELECT count(*) FROM records r WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1) AND r.source!='hermes-lineage' AND NOT EXISTS(SELECT 1 FROM hindsight_done d WHERE d.backend=? AND d.record_id=r.id)"+scope,
                                [self.key]+([] if "*" in self.sources else self.sources)).fetchone()[0]
         return {"enabled":True,"synced_records":synced,"pending_records":pending,"pending_deletions":deletion_pending,
+                "pending_bank_clear":bank_clear_pending,
                 "source_scope":self.sources,"error":self.last_error,"runtime":self.runtime,
                 "note":"Sync count is not source completeness. External facts are candidates; returned text is local evidence."}

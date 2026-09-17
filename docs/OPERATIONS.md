@@ -165,10 +165,14 @@ that external service's retention, replicas, credentials and backups.
 
 `python -m personal_memory reset --hermes-home <profile> --confirm` performs a canonical
 logical reset, advances the write epoch, invalidates derived memory, and synchronously
-attempts to clear the configured Hindsight bank. Check `external_engine` in the result:
-canonical reset can complete even if external clearing fails. Restart sessions to discard
-already loaded prompts. Native transcripts, external sources and backups are outside this
-reset; it is not secure physical erasure.
+attempts to clear the configured Hindsight bank. Retains, document deletions and the bulk
+clear share one engine lifecycle lock, so an in-flight retain can never republish evidence
+into a bank the reset already cleared. Check `external_engine` in the result: canonical
+reset can complete even if external clearing fails. A failed clear persists a durable
+cleanup obligation; the indexing worker retries it (also after a restart) and `/v1/ready`
+reports "external cleanup pending" until the engine confirms the bank is empty. Restart
+sessions to discard already loaded prompts. Native transcripts, external sources and
+backups are outside this reset; it is not secure physical erasure.
 
 ## Unified retirement
 

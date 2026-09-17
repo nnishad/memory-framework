@@ -379,6 +379,9 @@ class MemoryService:
             if engine.get("error"):problems.append(name+": worker error")
             if engine.get("pending_records",0):problems.append(name+": indexing backlog")
             if engine.get("pending_deletions",0):problems.append(name+": deletion backlog")
+            # A reset's external cleanup is durable and resumable, but the engine is not
+            # finished until the remote bank is confirmed empty.
+            if engine.get("pending_bank_clear"):problems.append(name+": external cleanup pending")
         return {"ready":not problems,"problems":problems,"generation":status["generation"],
                 "workflows":self.workflows.status(),"meaning":"Configured service is operational; this does not certify source completeness or retrieval quality."}
 
