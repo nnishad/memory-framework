@@ -119,6 +119,38 @@ class SourceRuntime:
             row=db.execute('SELECT next_at FROM source_schedule WHERE connection_id=? AND role=?',(cid,role)).fetchone()
         return not row or row[0]<=time.time()
 
+    def _declarations(self, cid, connection, adapter):
+        """Resolve validated adapter declarations exactly once per refresh interval.
+
+        Honors a persisted backoff even when nothing is cached, invalidates the cache
+        when the connection configuration or credentials change (generation,
+        scope hash or secret reference), and treats a discovery auth failure like a
+        read failure by parking the connection.
+        """
+        fingerprint=(connection.get('generation'),connection.get('scope_hash'),connection.get('secret_ref'))
+        cached=self.discovered.get(cid)
+        if not self._due(cid,'discovery'):
+            if cached is None:return None                 # honor a persisted backoff
+            if cached[0]==fingerprint:return cached[1]     # valid cache, not yet due
+            # A changed configuration or credential rotates the fingerprint and must
+            # force a refresh even while the previous discovery interval still holds.
+        try:
+            streams=adapter.discover(self.sync.context(connection))
+        except AdapterError as error:
+            if error.kind=='auth':self.sync._set_state(cid,'needs_auth')
+            self._schedule(cid,'discovery',60,error.message)
+            return None
+        except Exception as error:
+            self._schedule(cid,'discovery',60,type(error).__name__+': source discovery failed')
+            return None
+        self.discovered[cid]=(fingerprint,streams)
+        # Discovery may contact an upstream service for dynamic streams or
+        # partitions. Keep it independent from the one-second supervisor loop and
+        # refresh it at the connection's normal poll cadence.
+        discovery_delay=min(max(int(connection['scope'].get('poll_seconds',300)),60),3600)
+        self._schedule(cid,'discovery',discovery_delay)
+        return streams
+
     def _recover_cursor(self,cid):
         # Reserve a fresh live anchor before restarting a converging historical scan.
         profile=self.sync.verify(cid)
@@ -141,22 +173,8 @@ class SourceRuntime:
                 adapter=self.sync.registry.get(connection['adapter_id'])
                 if adapter is None:
                     continue
-                streams=self.discovered.get(cid)
-                if streams is None or self._due(cid,'discovery'):
-                    try:
-                        streams=adapter.discover(self.sync.context(connection))
-                    except AdapterError as error:
-                        self._schedule(cid,'discovery',60,error.message)
-                        continue
-                    except Exception as error:
-                        self._schedule(cid,'discovery',60,type(error).__name__+': source discovery failed')
-                        continue
-                    self.discovered[cid]=streams
-                    # Discovery may contact an upstream service for dynamic streams or
-                    # partitions. Keep it independent from the one-second supervisor
-                    # loop and refresh it at the connection's normal poll cadence.
-                    discovery_delay = min(max(int(connection['scope'].get('poll_seconds', 300)), 60), 3600)
-                    self._schedule(cid, 'discovery', discovery_delay)
+                streams=self._declarations(cid, connection, adapter)
+                if streams is None:continue
                 passes=[(stream['stream_id'], partition, role)
                         for stream in streams
                         for partition in ([part['id'] for part in stream.get('partitions',[])] or [''])
@@ -181,7 +199,7 @@ class SourceRuntime:
                     try:
                         if role=='incremental' and connection['adapter_id']=='google.gmail' and not (state['cursor'] or {}).get('offset') and not (state['cursor'] or {}).get('page'):
                             self.sync.verify(cid)
-                        result=self.worker.run_once(cid,stream=stream,partition=partition,role=role,ttl=900)
+                        result=self.worker.run_once(cid,stream=stream,partition=partition,role=role,ttl=900,declarations=streams)
                         status=result['status']
                         if status=='resync_required':
                             if connection['adapter_id']=='google.gmail':

@@ -63,7 +63,7 @@ The SDK should define serializable types with independent protocol versions:
 | Type | Required meaning |
 | --- | --- |
 | `AdapterSpec` | Stable adapter ID, package version, supported protocol versions, config JSON schema, required secret references, capabilities |
-| `ConnectionContext` | Immutable connection/source identity, selected scope, credential handle, deadlines and cancellation; no arbitrary admin client |
+| `ConnectionContext` | Immutable connection/source identity, selected scope, the `stream` and `partition` the runtime leased for this read, credential handle, deadlines and cancellation; no arbitrary admin client |
 | `StreamSpec` | Stream/partition IDs, supported read modes, cursor semantics, history/deletion limitations |
 | `ReadState` | Adapter state version, opaque cursor, fixed scope hash, mode, optional snapshot boundary |
 | `SourcePage` | Page identity, operations, next state, completion marker, coverage observations |
@@ -81,6 +81,14 @@ file adapter.
 and transformation version. Neither advances authoritative progress. The runtime
 validates outputs and owns commits. Source adapters cannot set truth labels,
 change owner permissions, or choose runtime code from imported payloads.
+
+A single adapter may declare several streams and each stream several partitions.
+The runtime leases, cursors and retries every `(stream, partition, role)` independently
+and passes the current selectors to `read_page` as `context["stream"]` and
+`context["partition"]` (the empty string for a stream that declares no partitions).
+Adapters serving one stream may ignore them; multi-stream adapters must select the
+slice named by the context and must never read a neighbouring partition. The runtime
+rejects a read whose selectors are not declared by `discover` before any source I/O.
 
 Use entry-point discovery for installed Python adapter packages. Publish JSON
 schemas and a bounded authenticated push protocol for other languages. A phone
@@ -148,6 +156,15 @@ Provide per-connection API concurrency, byte budgets, rate limits, backoff with
 jitter, cancellation, and fair queues for live versus historical work. Perform
 network/model calls outside write transactions. Recover unfinished leases after
 expiry and reject stale workers with fencing tokens.
+
+Resolve an adapter's `discover` declarations once per configured refresh interval
+and pass that single validated result through the page read and the commit path,
+so a multi-page pass does not re-discover per page. Keep the cached declarations
+keyed by the connection's generation, scope hash and secret reference: rotate that
+fingerprint whenever configuration or credentials change so the next tick refreshes
+the cache. Honor a persisted discovery backoff even when no cached declarations
+remain, and treat a discovery authentication failure like any other auth signal
+(park the connection in `needs_auth`) rather than crashing the tick loop.
 
 Webhook receivers acknowledge only after durable inbox insertion. When an event
 only signals changes, coalesce triggers with an incrementing generation; a signal

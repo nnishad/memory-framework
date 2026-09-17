@@ -71,14 +71,22 @@ def adapter_supports(spec, capability):
     return bool(spec["capabilities"].get(capability))
 
 
-def connection_context(*, connection_id, source, scope=None, secrets=None, deadline=None):
-    """Immutable per-run context. Secrets resolve by reference; no arbitrary admin client."""
+def connection_context(*, connection_id, source, scope=None, secrets=None, deadline=None,
+                       stream=None, partition=None):
+    """Immutable per-run context. Secrets resolve by reference; no arbitrary admin client.
+
+    ``stream`` and ``partition`` identify the exact slice the runtime leased for the
+    current read; they default to ``None`` so connection-level calls (check, discover,
+    attachment) stay valid, and single-stream adapters may ignore them entirely.
+    """
     if not callable(secrets):
         secrets = lambda name, _missing=connection_id: (_ for _ in ()).throw(
             AdapterError("auth", f"Secret {name!r} is not resolvable for this connection"))
     return {"connection_id": _text(connection_id, "connection_id", 200),
             "source": _text(source, "source", 200),
-            "scope": copy.deepcopy(scope or {}), "secrets": secrets, "deadline": deadline}
+            "scope": copy.deepcopy(scope or {}), "secrets": secrets, "deadline": deadline,
+            "stream": _text(stream, "stream", 200) if stream else stream,
+            "partition": _text(partition, "partition", 500) if partition else partition}
 
 
 def stream_spec(stream_id, *, modes=("backfill",), partitions=(), history_limit=None,

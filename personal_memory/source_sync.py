@@ -170,7 +170,7 @@ class SourceSync:
             raise
         return result
 
-    def context(self, connection):
+    def context(self, connection, *, stream=None, partition=None):
         scope = connection['scope']
         if isinstance(scope, str): scope = json.loads(scope)
         reference = connection.get('secret_ref')
@@ -181,7 +181,7 @@ class SourceSync:
             except (KeyError,FileNotFoundError):
                 raise AdapterError('auth','Connection credentials are unavailable; reauthorize') from None
         context = connection_context(connection_id=connection['id'],source=connection['source'],
-                                     scope=scope,secrets=resolve)
+                                     scope=scope,secrets=resolve,stream=stream,partition=partition)
         context['secret_ref'] = reference
         if hasattr(self,'cancel_event'):context['cancelled']=self.cancel_event.is_set
         return context
@@ -318,7 +318,7 @@ class SourceSync:
 
     # ---- atomic page commit -------------------------------------------------
 
-    def commit_page(self, lease, *, op_id, page, items=None, quarantined=()):
+    def commit_page(self, lease, *, op_id, page, items=None, quarantined=(), declarations=None):
         """The one bounded, transaction-aware sync commit: records, source heads,
         jobs, coverage, receipt and cursor share a single SQLite transaction.
         Replay of an identical operation returns the committed outcome; reusing an
@@ -329,7 +329,7 @@ class SourceSync:
         digest_value = digest([page_digest(page), items, quarantined,lease['connection_id'],
                                lease['stream'],lease['partition'],lease['role']])
         connection_info = self.connection(lease['connection_id'])
-        version_order = self._version_order(connection_info, lease['stream'])
+        version_order = self._version_order(connection_info, lease['stream'], declarations)
         results = {"applied": 0, "suppressed": 0, "history_only": 0, "skipped": 0,
                    "records": [], "page_complete": bool(page["complete"]), "replayed": False}
         with self.store.lock, self.store.connect() as db:
@@ -403,9 +403,13 @@ class SourceSync:
             lease['cursor'] = page['next_state']['cursor']
         return outcome
 
-    def _version_order(self, connection, stream):
+    def _version_order(self, connection, stream, declarations=None):
+        # The validated declarations resolved once by the supervisor are reused here; a
+        # direct/manual commit re-resolves them for itself so no page rediscovers twice.
+        if declarations is None:
+            declarations = self._adapter(connection["adapter_id"]).discover(self.context(connection))
         try:
-            for declared in self._adapter(connection["adapter_id"]).discover(self.context(connection)):
+            for declared in declarations:
                 if declared["stream_id"] == stream:
                     return declared.get("version_order", "opaque")
         except AdapterError:
@@ -490,8 +494,9 @@ class SourceSync:
         record_ids = []
         applied_rows = []
         for record in operation["records"]:
-            if self.store.deletions.contains(self.store.source_key(record["source"], record["source_id"])):
-                # Forgotten items are durable suppressions, not page failures (SEC-06).
+            if self._is_tombstoned(record):
+                # Forgotten items and revisions are durable suppressions, not page
+                # failures (SEC-06): they never become heads, jobs, projections or evidence.
                 results["suppressed"] += 1
                 continue
             item = {"source": record["source"], "source_id": record["source_id"],
@@ -535,32 +540,43 @@ class SourceSync:
             results["history_only"] += 1
 
     @staticmethod
+    def _record_id(source, source_id, revision):
+        return "rec_" + digest([source, source_id, revision])[:32]
+
+    def _is_tombstoned(self, record):
+        """True for a whole-item forget or an individually-forgotten revision."""
+        if self.store.deletions.contains(
+                self.store.source_key(record["source"], record["source_id"])):
+            return True
+        return self.store.deletions.contains(self._record_id(
+            record["source"], record["source_id"], record["revision"]))
+
+    @staticmethod
     def _current(db, source, source_id, head):
         ids={r[0] for r in db.execute('SELECT record_id FROM source_current_records WHERE source=? AND source_id=?',(source,source_id))}
         return ids or ({head['record_id']} if head and head['record_id'] else set())
 
     def _retire(self, db, record_id, replacement=None):
-        from .learning import invalidate
-        from .curated import invalidate as invalidate_curated
-        ids=[r[0] for r in db.execute('WITH RECURSIVE d(id) AS (SELECT ? UNION SELECT child_id FROM record_dependencies JOIN d ON parent_id=d.id) SELECT id FROM d',(record_id,))]
-        for rid in ids:
-            from . import awareness
-            awareness.invalidate_record(db, rid)
-            db.execute('INSERT OR REPLACE INTO record_visibility VALUES(?,1,?)',(rid,replacement))
-            invalidate(db,record_id=rid)
-            invalidate_curated(db,self.store,rid)
+        from . import lifecycle
+        lifecycle.retire(db, self.store, record_id, replacement=replacement)
 
     def _enqueue_item_obligations(self, db, connection_id, sources_for_jobs, results):
         """Each attachment belongs to a specific live evidence revision."""
         jobs_before = results.get("jobs", 0)
         for entry in sources_for_jobs:
+            records = entry.get("records", []) if isinstance(entry, dict) else []
+            if records and not any(self._record_id(r["source"], r["source_id"], r["revision"])
+                                   in results["records"] for r in records):
+                # Every record here was suppressed as forgotten: derive no attachment or
+                # projection obligations from evidence that never became current.
+                continue
             descriptors = entry.get("attachments") if isinstance(entry, dict) else None
             for descriptor in descriptors or []:
                 records=entry.get('records',[])
                 if not records:
                     continue
                 record=records[0]
-                rid='rec_'+digest([record['source'],record['source_id'],record['revision']])[:32]
+                rid=self._record_id(record['source'],record['source_id'],record['revision'])
                 if rid not in results['records'] or db.execute('SELECT 1 FROM record_visibility WHERE record_id=? AND hidden=1',(rid,)).fetchone(): continue
                 identity=descriptor.get('part_id') or descriptor.get('sha256')
                 if not identity: raise ValueError('Attachment needs a stable part identity')
@@ -734,24 +750,37 @@ class SyncWorker:
         self.sync = sync
         self.owner = owner or 'source-worker-'+uuid.uuid4().hex
 
-    def _context(self, connection):
-        return self.sync.context(connection)
+    def _context(self, connection, *, stream=None, partition=None):
+        return self.sync.context(connection, stream=stream, partition=partition)
 
-    def run_once(self, connection_id, *, stream, partition="", role="backfill", owner=None, ttl=60):
+    def run_once(self, connection_id, *, stream, partition="", role="backfill", owner=None, ttl=60,
+                 declarations=None):
         lease = None
         try:
             lease = self.sync.claim(connection_id, stream=stream, partition=partition,
                                     role=role, owner=owner or self.owner, ttl=ttl)
             connection = self.sync.connection(connection_id)
             adapter = self.sync._adapter(connection["adapter_id"])
-            declarations=adapter.discover(self._context(connection))
-            if not any(d['stream_id']==stream and role in d['modes'] for d in declarations):
+            # The supervisor resolves declarations once per refresh interval and passes
+            # them here; a manual or cron pass discovers once for itself.
+            if declarations is None:
+                declarations = adapter.discover(self._context(connection))
+            selected=next((d for d in declarations if d['stream_id']==stream), None)
+            if selected is None or role not in selected['modes']:
                 raise AdapterError('unsupported','Stream does not support this read mode')
+            # Validate the selectors before reading so a typo cannot silently read a
+            # neighbouring partition or an undeclared stream.
+            declared_partitions=[p['id'] for p in selected.get('partitions',[])]
+            if declared_partitions:
+                if partition not in declared_partitions:
+                    raise AdapterError('unsupported','Partition is not declared by this stream')
+            elif partition:
+                raise AdapterError('unsupported','This stream declares no partitions')
             state = read_state(state_version=1, cursor=lease["cursor"], mode=role,scope_hash=connection['scope_hash'])
-            page = adapter.read_page(self._context(connection), state)
+            page = adapter.read_page(self._context(connection, stream=stream, partition=partition), state)
             op_id = "sop_" + digest([connection_id, stream, partition, role,
                                      lease["cursor"], lease["scan"],lease['epoch'],lease['generation'], page["page_id"]])[:32]
-            result = self.sync.commit_page(lease, op_id=op_id, page=page)
+            result = self.sync.commit_page(lease, op_id=op_id, page=page, declarations=declarations)
             terminal = bool(page['complete']) and not page['operations']
             return {"status": "complete" if terminal else "committed",
                     "applied": result["applied"], "suppressed": result["suppressed"],

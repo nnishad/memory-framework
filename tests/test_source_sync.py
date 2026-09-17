@@ -6,11 +6,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from personal_memory.common import digest
 from personal_memory.store import Store
 from personal_memory.source_sdk import (connection_context, read_state, source_operation,
                                         source_page, stream_spec, wrap_ingestion_connector)
 from personal_memory.source_sync import SourceSync
 from personal_memory.ingestion import ConnectorSpec, IngestionConnector
+
+
+def rec_id(source, source_id, revision):
+    return "rec_" + digest([source, source_id, revision])[:32]
 
 
 def note_record(source_id, text=None, revision="1", source="gmail-acct1"):
@@ -308,6 +313,87 @@ class CoverageAndResetTests(SyncTestCase):
         self.assertEqual(inc["cursor"], {"h": 99})
         self.assertEqual(bf["state_version"], 2)  # each role advanced its own state once
         self.assertEqual(inc["state_version"], 2)
+
+
+class TombstoneReplayTests(SyncTestCase):
+    """Fix 2: a forgotten revision must suppress on replay, never abort the page."""
+
+    def _present(self, source_id, revision=None):
+        with self.store.connect() as db:
+            if revision is None:
+                return db.execute("SELECT COUNT(*) FROM records WHERE source=? AND source_id=?"
+                                  " AND deleted=0", ("gmail-acct1", source_id)).fetchone()[0]
+            return db.execute("SELECT COUNT(*) FROM records WHERE source=? AND source_id=?"
+                              " AND revision=? AND deleted=0",
+                              ("gmail-acct1", source_id, revision)).fetchone()[0]
+
+    def test_individual_record_tombstone_is_suppressed_not_fatal(self):
+        self.store.deletions.append([rec_id("gmail-acct1", "m1", "1")])
+        lease = self.lease()
+        result = self.sync.commit_page(lease, op_id="op_1", page=self.page(
+            "pg_1", [self.upsert("m1", 10), self.upsert("m2", 11)], {"after": 11}))
+        self.assertEqual(result["suppressed"], 1)
+        self.assertEqual(result["applied"], 1)
+        self.assertEqual(self._present("m1"), 0)
+        self.assertIsNone(self.sync.head("gmail-acct1", "m1"))
+        self.assertIsNotNone(self.sync.head("gmail-acct1", "m2"))
+        self.assertEqual(self.sync.stream_state(
+            self.conn["connection_id"], "messages", "", "backfill")["cursor"], {"after": 11})
+
+    def test_forgotten_email_suppressed_across_backfill_incremental_reconcile(self):
+        self.store.forget_source("gmail-acct1", "m_forget")
+        for index, role in enumerate(("backfill", "incremental", "reconcile")):
+            lease = self.lease(owner=f"w{index}", role=role)
+            result = self.sync.commit_page(
+                lease, op_id=f"op_{role}", page=source_page(
+                    page_id=f"pg_{role}",
+                    operations=[self.upsert("m_forget", 100), self.upsert(f"new_{role}", 101)],
+                    next_state=read_state(cursor={"after": 101}, mode=role,
+                                          state_version=self.expected_version)))
+            self.assertEqual(result["suppressed"], 1, role)
+            self.assertEqual(result["applied"], 1, role)
+            self.assertIsNone(self.sync.head("gmail-acct1", "m_forget"), role)
+            self.assertEqual(self._present("m_forget"), 0, role)
+            self.assertIsNotNone(self.sync.head("gmail-acct1", f"new_{role}"), role)
+
+    def test_forgotten_chunk_does_not_resurrect_through_sibling_records(self):
+        # Multi-record email: one individually-forgotten chunk must stay absent.
+        self.store.deletions.append([rec_id("gmail-acct1", "m1", "2")])
+        lease = self.lease()
+        op = source_operation("upsert", "m1", source_version=5, records=[
+            note_record("m1", revision="1"), note_record("m1", revision="2"),
+            note_record("m1", revision="3")])
+        result = self.sync.commit_page(lease, op_id="op_1", page=self.page(
+            "pg_1", [op], {"after": 5}))
+        self.assertEqual(result["suppressed"], 1)
+        self.assertEqual(self._present("m1", "2"), 0)
+        self.assertEqual(self._present("m1", "1"), 1)
+        self.assertEqual(self._present("m1", "3"), 1)
+
+    def test_replay_of_suppressed_page_is_idempotent(self):
+        self.store.deletions.append([rec_id("gmail-acct1", "m1", "1")])
+        lease = self.lease()
+        page = self.page("pg_1", [self.upsert("m1", 10), self.upsert("m2", 11)], {"after": 11})
+        first = self.sync.commit_page(lease, op_id="op_1", page=page)
+        replay = self.sync.commit_page(lease, op_id="op_1", page=page)
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["records"], first["records"])
+        self.assertEqual(self._present("m1"), 0)
+
+
+    def test_forgotten_email_produces_no_attachment_or_projection_jobs(self):
+        self.store.forget_source("gmail-acct1", "m1")
+        lease = self.lease()
+        item = {"source_id": "m1", "records": [note_record("m1")],
+                "attachments": [{"sha256": "a" * 64, "part_id": "p1"}],
+                "projections": [{"kind": "thread", "source_id": "m1", "transform": "x"}]}
+        result = self.sync.commit_page(lease, op_id="op_1",
+                                       page=self.page("pg_1", [self.upsert("m1", 10)], {"after": 10}),
+                                       items=[item])
+        self.assertEqual(result["suppressed"], 1)
+        self.assertEqual(self.sync.pending_jobs(
+            self.conn["connection_id"], kinds=("attachment", "projection")), [])
+        self.assertIsNone(self.sync.head("gmail-acct1", "m1"))
 
 
 if __name__ == "__main__":
