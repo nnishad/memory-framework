@@ -57,7 +57,9 @@ class MemoryService:
         self.extension_registry=ExtensionRegistry(extension_schemas)
         from .storage import database_path
         self.store=Store(database_path(data_dir,"memory"))
-        self.retrieval=load_backend(self.store,backend,retrieval_config)
+        # The service process is the sole owner of the durable indexing journals; a
+        # second writer against the same data directory fails at startup.
+        self.retrieval=load_backend(self.store,backend,retrieval_config,index_owner=True)
         from .learning import Learning
         from .adaptive import AdaptiveRecall
         self.learning=Learning(self.store)

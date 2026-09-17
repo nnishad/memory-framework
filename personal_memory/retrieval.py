@@ -6,6 +6,7 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .common import required_text, timestamp
 from .relevance import RelevanceGate
@@ -48,7 +49,7 @@ def _semantic_disabled_by_env():
 
 
 class Hybrid:
-    def __init__(self, store, config=None, semantic=None, hindsight=None, start=True):
+    def __init__(self, store, config=None, semantic=None, hindsight=None, start=True, index_owner=False):
         self.store, self.config = store, config or {}
         self.relevance = RelevanceGate(self.config.get("relevance"))
         # Temporal consolidation: an additive recency bonus on top of RRF so a current fact
@@ -125,6 +126,14 @@ class Hybrid:
         self.graph_record_degree = self._bounded_int(graph.get("record_degree"), 6, 1, 16)
         self.graph_entity_degree = self._bounded_int(graph.get("entity_degree"), 16, 1, 64)
         self._start = start
+        # Explicit indexing ownership: exactly one process may run the durable
+        # semantic/Hindsight journals against a data directory. A second writer
+        # fails here, at startup, instead of silently racing the first for the
+        # same index state (the awareness worker searches via the service instead).
+        self.index_lease = None
+        if index_owner:
+            from .asgi import ProcessLease
+            self.index_lease = ProcessLease(Path(store.path).parent / "indexing.lock")
         if start:
             for component in (self.semantic, self.hindsight):
                 if component:
@@ -179,6 +188,9 @@ class Hybrid:
         deadline=time.monotonic()+125
         for thread in self.threads:
             thread.join(timeout=max(0,deadline-time.monotonic()))
+        if self.index_lease is not None:
+            self.index_lease.close()
+            self.index_lease = None
 
     def warmup(self):
         """Prime the lazily-loaded retrieval models so the first real query is fast.
