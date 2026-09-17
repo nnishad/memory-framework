@@ -85,6 +85,9 @@ class Store(Catalog):
             db.executescript(CURATED_SCHEMA)
             from .source_sync import SCHEMA as SOURCE_SYNC_SCHEMA
             db.executescript(SOURCE_SYNC_SCHEMA)
+            # The semantic work queue must exist before any ingest can enqueue.
+            from .semantic import WORK_SCHEMA
+            db.executescript(WORK_SCHEMA)
             # Discovery retry state is interpreted against the configuration that
             # produced it; older databases only carried the deadline.
             if "config_key" not in {r[1] for r in db.execute("PRAGMA table_info(source_schedule)")}:
@@ -259,6 +262,8 @@ class Store(Catalog):
         self._receipt(db,rid,item.get("_contract"))
         db.execute("INSERT OR IGNORE INTO sources VALUES(?, 'unknown', NULL, '', ?)", (source, now()))
         self.audit(db, "ingest", rid)
+        from . import semantic
+        semantic.enqueue(db, "index", [rid])
         return {"id": rid, "duplicate": False}
 
     def checkpoint(self,connector_id,source):
@@ -528,6 +533,8 @@ class Store(Catalog):
                 db.execute("DELETE FROM ingestion_receipts WHERE record_id=?", (rid,))
                 db.execute("UPDATE records SET text='',metadata='{}',deleted=1 WHERE id=?", (rid,))
                 self.audit(db, "forget", rid)
+            from . import semantic
+            semantic.enqueue(db, "retire", affected)
         return {"forgotten": record_id, "affected_records":affected,"retracted_claims": ids,
                 "note": "Logical removal. Source identifiers/tombstone remain; backups and prior responses are outside this operation."}
 

@@ -64,6 +64,11 @@ def retire(db, store, record_id, *, replacement=None, exclude_replacement=False)
         # An active claim resting on retired evidence is unsupported knowledge; the
         # row stays for historical inspection but never remains current.
         db.execute("UPDATE claims SET status='retracted' WHERE record_id=? AND status='active'", (rid,))
+    if hidden:
+        # Retired evidence must leave every rebuildable index; the durable queue
+        # row commits with the visibility write, so no sweep can miss it.
+        from . import semantic
+        semantic.enqueue(db, "retire", sorted(hidden))
     return hidden
 
 

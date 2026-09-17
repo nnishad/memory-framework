@@ -14,6 +14,30 @@ from .common import digest, now
 
 DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+# Durable incremental work queue: canonical writers enqueue index/retire rows
+# inside their own transaction, so background polling never rescans the archive.
+WORK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS semantic_work(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN('index','retire')),
+  record_id TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+  available_at REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+  UNIQUE(kind, record_id));
+CREATE INDEX IF NOT EXISTS semantic_work_due ON semantic_work(kind, available_at, id);
+CREATE TABLE IF NOT EXISTS semantic_bootstrap(
+  model TEXT PRIMARY KEY, enqueued_at TEXT NOT NULL);
+"""
+
+
+def enqueue(db, kind, record_ids):
+    """Request semantic work for records inside the caller's transaction.
+
+    Coalesces on (kind, record_id): repeated signals for the same record are
+    one bounded unit of work, never duplicate embeddings.
+    """
+    for rid in record_ids:
+        db.execute("INSERT OR IGNORE INTO semantic_work(kind,record_id,updated_at) VALUES(?,?,?)",
+                   (kind, rid, now()))
+
 
 class FastEmbedder:
     def __init__(self, config):
@@ -105,7 +129,7 @@ class SemanticIndex:
             self.hnsw = hnswlib
         except ImportError:
             self.hnsw = None
-        with store.connect() as db:
+        with store.lock, store.connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS vector_failures(
                   model TEXT,record_id TEXT,error TEXT,attempts INTEGER,next_retry REAL,PRIMARY KEY(model,record_id));
@@ -117,6 +141,24 @@ class SemanticIndex:
                   model TEXT NOT NULL, record_id TEXT NOT NULL REFERENCES records(id),
                   PRIMARY KEY(model,record_id));
             """)
+            db.executescript(WORK_SCHEMA)
+            # Bootstrap an archive created before the queue exactly once per model
+            # revision; later opens consult only the durable marker.
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM semantic_bootstrap WHERE model=?", (self.key,)).fetchone():
+                db.execute("""INSERT OR IGNORE INTO semantic_work(kind,record_id,updated_at)
+                    SELECT 'index', r.id, ? FROM records r WHERE r.deleted=0
+                    AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)
+                    AND NOT EXISTS(SELECT 1 FROM vector_done d WHERE d.model=? AND d.record_id=r.id)""",
+                           (now(), self.key))
+                db.execute("""INSERT OR IGNORE INTO semantic_work(kind,record_id,updated_at)
+                    SELECT DISTINCT 'retire', v.record_id, ? FROM
+                    (SELECT record_id FROM vector_chunks UNION SELECT record_id FROM vector_done) v
+                    WHERE NOT EXISTS(SELECT 1 FROM records r WHERE r.id=v.record_id AND r.deleted=0
+                    AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1))""",
+                           (now(),))
+                db.execute("INSERT OR IGNORE INTO semantic_bootstrap VALUES(?,?)", (self.key, now()))
+        with store.connect() as db:
             for row in db.execute("SELECT v.* FROM vector_chunks v JOIN records r ON r.id=v.record_id WHERE v.model=? AND r.deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)", (self.key,)):
                 self._add(dict(row))
 
@@ -141,21 +183,48 @@ class SemanticIndex:
             else:
                 self.vectors[row["id"]] = vector
 
+    def _retire_record(self, db, record_id):
+        """Erase every vector for one record across all model revisions.
+
+        Retirement work is only created by canonical mutators, so processing a
+        row is a targeted delete; no archive-wide sweep is required or run.
+        Index rows enqueued before this retirement are dropped as superseded;
+        newer index requests (a restore that raced ahead of processing) survive
+        and re-embed from scratch.
+        """
+        db.execute("DELETE FROM vector_chunks WHERE record_id=?", (record_id,))
+        db.execute("DELETE FROM vector_done WHERE record_id=?", (record_id,))
+        db.execute("DELETE FROM vector_failures WHERE record_id=?", (record_id,))
+        cur = db.execute("SELECT id FROM semantic_work WHERE kind='retire' AND record_id=?", (record_id,)).fetchone()
+        db.execute("DELETE FROM semantic_work WHERE kind='index' AND record_id=? AND id<?",
+                   (record_id, cur[0] if cur else 1 << 62))
+        with self.lock:
+            for label in [label for label, row in self.rows.items() if row[0] == record_id]:
+                if self.index: self.index.mark_deleted(label)
+                self.rows.pop(label, None); self.vectors.pop(label, None)
+
     def sync(self, batch=16):
         with self.sync_lock:
+            processed = 0
+            due = time.time()
+            # Durable retirement work runs first: bounded, targeted erases.
+            with self.store.lock, self.store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                retire_rows = db.execute(
+                    "SELECT id,record_id FROM semantic_work WHERE kind='retire' AND available_at<=?"
+                    " ORDER BY id LIMIT ?", (due, batch)).fetchall()
+                for row in retire_rows:
+                    self._retire_record(db, row["record_id"])
+                    db.execute("DELETE FROM semantic_work WHERE id=?", (row["id"],))
+            processed += len(retire_rows)
+            # Index work due now; retry state and backoff live on the queue row.
             with self.store.connect() as db:
-                deleted={r[0] for r in db.execute("SELECT r.id FROM records r WHERE r.deleted=1 OR EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)")}
-                db.execute("DELETE FROM vector_chunks WHERE record_id IN (SELECT r.id FROM records r WHERE r.deleted=1 OR EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1))")
-                db.execute("DELETE FROM vector_done WHERE record_id IN (SELECT r.id FROM records r WHERE r.deleted=1 OR EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1))")
-                with self.lock:
-                    for label in [label for label,row in self.rows.items() if row[0] in deleted]:
-                        if self.index:self.index.mark_deleted(label)
-                        self.rows.pop(label,None);self.vectors.pop(label,None)
-                rows = [dict(r) for r in db.execute("""SELECT r.id,r.text FROM records r WHERE deleted=0
+                rows = [dict(r) for r in db.execute("""SELECT w.id AS work,w.attempts,r.id,r.text
+                    FROM semantic_work w JOIN records r ON r.id=w.record_id
+                    WHERE w.kind='index' AND w.available_at<=? AND r.deleted=0
                     AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)
                     AND NOT EXISTS(SELECT 1 FROM vector_done d WHERE d.model=? AND d.record_id=r.id)
-                    AND NOT EXISTS(SELECT 1 FROM vector_failures f WHERE f.model=? AND f.record_id=r.id AND f.next_retry>?)
-                    ORDER BY r.ingested_at,r.id LIMIT ?""", (self.key,self.key,time.time(),batch))]
+                    ORDER BY w.id LIMIT ?""", (due, self.key, batch))]
             for row in rows:
                 try:
                     self._index_record(row)
@@ -163,13 +232,17 @@ class SemanticIndex:
                 except Exception as error:
                     with self.store.connect() as db:
                         db.execute("DELETE FROM vector_done WHERE model=? AND record_id=?",(self.key,row["id"]))
+                        delay = min(3600.0, 30.0 * (2 ** row["attempts"]))
+                        db.execute("UPDATE semantic_work SET attempts=attempts+1,available_at=?,updated_at=? WHERE id=?",
+                                   (time.time() + delay, now(), row["work"]))
                         db.execute("INSERT INTO vector_failures VALUES(?,?,?,1,?) ON CONFLICT(model,record_id) DO UPDATE SET attempts=attempts+1,error=excluded.error,next_retry=excluded.next_retry",
-                                   (self.key,row["id"],type(error).__name__,time.time()+30))
+                                   (self.key,row["id"],type(error).__name__,time.time()+delay))
                         db.execute("INSERT OR REPLACE INTO processing_readiness VALUES(?,?,?,?,?)",
                                    (row['id'],'semantic','failed',
                                     json.dumps({'error':type(error).__name__}),now()))
+                processed += 1
             self.last_error = None
-            return len(rows)
+            return processed
 
     def _index_record(self,row):
         chunks = list(self.embedder.chunks(row["text"]))
@@ -188,7 +261,10 @@ class SemanticIndex:
             normalized.append(vector)
         additions = []
         with self.store.lock, self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             if not db.execute("SELECT 1 FROM records r WHERE r.id=? AND r.deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)", (row["id"],)).fetchone():
+                # Retired while embedding ran: publish nothing and drop the request.
+                db.execute("DELETE FROM semantic_work WHERE id=?", (row["work"],))
                 return
             for (start,end,_), vector in zip(chunks,normalized):
                 vector = self.np.asarray(vector, dtype=self.np.float32)
@@ -200,6 +276,8 @@ class SemanticIndex:
             db.execute("INSERT OR IGNORE INTO vector_done VALUES(?,?)", (self.key,row["id"]))
             db.execute("INSERT OR REPLACE INTO processing_readiness VALUES(?,?,?,?,?)",
                        (row['id'],'semantic','ready',None,now()))
+            # The queue row and the vectors commit (or roll back) together.
+            db.execute("DELETE FROM semantic_work WHERE id=?", (row["work"],))
         for addition in additions:
             self._add(addition)
 
@@ -231,8 +309,10 @@ class SemanticIndex:
 
     def status(self):
         with self.store.connect() as db:
-            remaining = db.execute("""SELECT count(*) FROM records r WHERE deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1) AND NOT EXISTS(
-                SELECT 1 FROM vector_done d WHERE d.model=? AND d.record_id=r.id)""", (self.key,)).fetchone()[0]
+            # Pending is queue-backed: canonical writers enqueue every change, so
+            # the count stays O(backlog) instead of O(archive) per call.
+            remaining = db.execute("""SELECT count(*) FROM semantic_work w WHERE w.kind='index' AND NOT EXISTS(
+                SELECT 1 FROM vector_done d WHERE d.model=? AND d.record_id=w.record_id)""", (self.key,)).fetchone()[0]
             failures=db.execute("SELECT count(*) FROM vector_failures f JOIN records r ON r.id=f.record_id WHERE f.model=? AND r.deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)",(self.key,)).fetchone()[0]
         return {"enabled":True,"model_key":self.key,"failed_records":failures,"index":"hnsw" if self.hnsw else "exact_numpy",
                 "pending_records":remaining,"ready":remaining==0 and self.last_error is None,

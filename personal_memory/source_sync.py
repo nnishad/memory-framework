@@ -480,6 +480,10 @@ class SourceSync:
                         for rid in affected: self._retire(db,rid)
                     else:
                         db.executemany('DELETE FROM record_visibility WHERE record_id=?',[(r,) for r in affected])
+                        # Restored evidence is invisible to the index until re-embedded;
+                        # enqueue the work in this same transaction.
+                        from . import semantic
+                        semantic.enqueue(db, "index", sorted(affected))
                 self.store.audit(db,'source_'+action,source_id)
                 changes.journal_state_change(db, connection, lease, source_id,
                                              "removed" if action == "remove" else "restored", affected)
@@ -523,6 +527,8 @@ class SourceSync:
             stored_metadata = None if stored is None else stored["metadata"]
             for rid in current - set(record_ids): self._retire(db,rid,primary)
             db.executemany('DELETE FROM record_visibility WHERE record_id=?',[(r,) for r in record_ids])
+            from . import semantic
+            semantic.enqueue(db, "index", record_ids)
             db.execute('DELETE FROM source_current_records WHERE source=? AND source_id=?',(source,source_id))
             db.executemany('INSERT INTO source_current_records VALUES(?,?,?)',[(source,source_id,r) for r in record_ids])
             db.execute('INSERT OR REPLACE INTO source_heads VALUES(?,?,?,?,?,?,?,?,?)',

@@ -143,11 +143,26 @@ with the profile's configured `Client`. Do not change canonical source content u
 the same revision; submit a corrected revision. Transient network failures remain in
 `pending` with backoff. A rejected record must not block later valid records.
 
-Embedding failures are recorded per record and retried. Model-weight/config changes
-produce a different index key; old indexes are rebuildable derived state. Do not edit
-canonical records to repair an index. A changed remote embedding deployment must use
-a new explicit `revision`. Exact NumPy search is linear; use and qualify the optional
-HNSW extra for larger archives. Restart reconstructs HNSW from SQLite vectors.
+Semantic index maintenance is incremental. Canonical writes enqueue durable
+index/retire requests in the same transaction; each background poll processes
+only due queue entries in bounded batches, so an idle poll touches the queue
+and never scans the archive. Failed records stay queued with durable retry
+backoff, survive restarts and coalesce per record. A pre-existing archive is
+bootstrapped into the queue exactly once per model revision key. Embedding
+failures are recorded per record and retried. Model-weight/config changes
+produce a different index key; old indexes are rebuildable derived state. Do not
+edit canonical records to repair an index. A changed remote embedding
+deployment must use a new explicit `revision`. Retrieval-time visibility checks
+stay independent of index freshness: a stale vector never returns retired
+evidence. Exact NumPy search is linear; use and qualify the optional HNSW extra
+for larger archives. Restart reconstructs HNSW from SQLite vectors.
+Measured on a Windows development box with a deterministic hash embedder
+(`python scripts/bench_semantic.py <records>` prints the JSON before/after evidence):
+background work is constant in archive size where the former scanner grew with
+it — at 5,000 records an idle poll dropped from 9.65 ms to 3.64 ms and a
+readiness status call from 7.22 ms to 2.84 ms, while indexing throughput
+(~70-80 records/s, embedding- and fsync-bound) and recall latency stayed
+unchanged.
 
 Hindsight 0.9.2 is installed and managed by default. Service startup creates a private,
 profile-specific embedded pg0 daemon and indexes every source; there is no enable flag.
