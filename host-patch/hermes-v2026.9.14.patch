@@ -207,10 +207,10 @@ index 98b9ef85ea..2c69dbafbd 100644
              args,
 diff --git a/agent/memory_bridge.py b/agent/memory_bridge.py
 new file mode 100644
-index 0000000000..59270164e2
+index 0000000000..de45556e8a
 --- /dev/null
 +++ b/agent/memory_bridge.py
-@@ -0,0 +1,315 @@
+@@ -0,0 +1,392 @@
 +"""Optional host memory boundaries; backend-specific policy stays in providers.
 +
 +No model tools and no changes to a live conversation's cached prompt prefix.
@@ -394,8 +394,8 @@ index 0000000000..59270164e2
 +               "_memory_awareness_delivery": True}
 +        from cron.scheduler_delivery import _resolve_delivery_targets, _deliver_result
 +        targets = _resolve_delivery_targets(job)
-+        if not targets:
-+            raise ValueError("destination did not resolve to a Hermes delivery target")
++        if len(targets) != 1:
++            raise ValueError("awareness destination must resolve to exactly one Hermes delivery target")
 +        context = cron_context(selected_home, job, delivery_id, targets, False)
 +
 +        from plugins.memory import load_memory_provider
@@ -418,12 +418,22 @@ index 0000000000..59270164e2
 +            raise RuntimeError(error)
 +        if job.get("last_delivery_unverified"):
 +            raise RuntimeError("Hermes channel acknowledged delivery without durable evidence")
-+        return "hermes:" + delivery_id
++        receipt = job.get("_memory_delivery_receipt")
++        if targets[0]["platform"] == "bot-chat":
++            bot_receipt = job.get("_bot_chat_delivery_receipts", {}).get(
++                f"bot-chat:{targets[0]['chat_id'] or '(own)'}", {})
++            if bot_receipt.get("status") == "settled":
++                receipt = "bot-chat:" + str(bot_receipt["delivery_id"])
++        if not isinstance(receipt, str) or not receipt or len(receipt) > 500:
++            raise RuntimeError("Hermes channel returned no bounded positive delivery receipt")
++        return receipt
 +    finally:
-+        shutdown = getattr(provider, "shutdown", None)
-+        if callable(shutdown):
-+            shutdown()
-+        reset_hermes_home_override(token)
++        try:
++            shutdown = getattr(provider, "shutdown", None)
++            if callable(shutdown):
++                shutdown()
++        finally:
++            reset_hermes_home_override(token)
 +
 +
 +@dataclass(frozen=True)
@@ -931,10 +941,39 @@ index 3d745e1360..2639541523 100644
              _save_compose_deliver(
                  d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
 diff --git a/cron/scheduler_delivery.py b/cron/scheduler_delivery.py
-index 90c02b331c..5ed5b60f90 100644
+index 90c02b331c..43a5741cce 100644
 --- a/cron/scheduler_delivery.py
 +++ b/cron/scheduler_delivery.py
-@@ -1685,6 +1685,11 @@ def _deliver_result(
+@@ -1438,6 +1438,12 @@ def _deliver_via_live_adapter(
+                 delivery_errors)
+ 
+         if adapter_ok:
++            if (job.get("_memory_awareness_delivery") and not timed_out
++                    and delivered_message_id is not None
++                    and not isinstance(delivered_message_id, bool)
++                    and str(delivered_message_id)):
++                job["_memory_delivery_receipt"] = (
++                    f"{t.platform_name}:{t.chat_id}:{delivered_message_id}")
+             # Log WHERE it went: a ghost delivery in the wrong lane is otherwise indistinguishable.
+             logger.info(
+                 # Log WHERE it went, not just that it went: a ghost delivery that landed in the wrong lane
+@@ -1539,6 +1545,15 @@ def _deliver_standalone(
+         msg = f"delivery warning: {_w} (target {t.where})"
+         logger.error("Job '%s': %s", job["id"], msg)
+         delivery_errors.append(msg)
++    if job.get("_memory_awareness_delivery"):
++        message_id = result.get("message_id") if isinstance(result, dict) else None
++        if (not isinstance(result, dict) or result.get("success") is not True
++                or result.get("skipped") or result.get("delivered") is False
++                or message_id is None or isinstance(message_id, bool) or not str(message_id)):
++            delivery_errors.append(
++                f"awareness delivery to {t.where} has no positive channel message receipt")
++            return
++        job["_memory_delivery_receipt"] = f"{t.platform_name}:{t.chat_id}:{message_id}"
+     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
+     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
+     _maybe_mirror_cron_delivery(
+@@ -1685,6 +1700,11 @@ def _deliver_result(
      ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
      job.pop("_bot_chat_delivery_receipts", None)
      targets = _resolve_delivery_targets(job, for_failure=for_failure)
@@ -946,6 +985,41 @@ index 90c02b331c..5ed5b60f90 100644
      if not targets:
          _record_delivery_verification(job, [])
          return _unresolved_delivery_outcome(job, for_failure)
+@@ -1720,7 +1740,7 @@ def _deliver_result(
+     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
+     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
+     unverified_targets: list = []
+-    if wrap_response:
++    if wrap_response and not job.get("_memory_awareness_delivery"):
+         task_name = job.get("name", job["id"])
+         delivery_content = (
+             f"Cronjob Response: {task_name}\n"
+@@ -1738,7 +1758,12 @@ def _deliver_result(
+     # at boot; standalone runs (`hermes cron run`) did not, silently dropping files. Idempotent.
+     from gateway.media_policy import apply_media_policy_env
+     apply_media_policy_env(user_cfg)
+-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
++    if job.get("_memory_awareness_delivery"):
++        # The validated awareness summary is the complete outbound payload.
++        # Source text cannot turn MEDIA tags into local file attachments.
++        media_files, cleaned_delivery_content = [], delivery_content
++    else:
++        media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+     requested_media = len(media_files)
+     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+     # Policy-dropped attachments will never be sent on ANY lane — record them in run status.
+@@ -1757,7 +1782,10 @@ def _deliver_result(
+         mirror_enabled = False
+     # Independent of the mirror knob: continuable surfaces (in_channel) must seed even when
+     # attach_to_session=false and cron.mirror_delivery=false, else the seed gets "" and fails.
+-    _, mirror_text = BasePlatformAdapter.extract_media(content)
++    if job.get("_memory_awareness_delivery"):
++        mirror_text = content
++    else:
++        _, mirror_text = BasePlatformAdapter.extract_media(content)
+     mirror_text = (mirror_text or "").strip()
+ 
+     try:
 diff --git a/cron/scheduler_prompt.py b/cron/scheduler_prompt.py
 index 586a791ded..eebcaeb910 100644
 --- a/cron/scheduler_prompt.py
@@ -1096,6 +1170,34 @@ index a28d278996..ca83c891eb 100644
          # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
          # "mem0", "hindsight", "holographic", "retaindb", "byterover".
          "provider": "",
+diff --git a/hermes_cli/profiles.py b/hermes_cli/profiles.py
+index d3ad434d59..556941ca3e 100644
+--- a/hermes_cli/profiles.py
++++ b/hermes_cli/profiles.py
+@@ -263,11 +263,21 @@ def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
+     self-referential (safe on the bare route) or names a different profile, which must fail
+     closed rather than silently resolve the owner's config. Invalid names return False."""
+     try:
+-        target = get_profile_dir(name)
+         if home is None:
+             from hermes_constants import get_hermes_home
+             home = get_hermes_home()
+-        return Path(target).expanduser().resolve(strict=False) == Path(home).expanduser().resolve(strict=False)
++            target = get_profile_dir(name)
++            return Path(target).expanduser().resolve(strict=False) == Path(home).expanduser().resolve(strict=False)
++        # An explicit home can come from --hermes-home rather than HERMES_HOME.
++        # Resolve its profile identity from that path itself, so a custom root
++        # remains usable without changing process-wide environment variables.
++        resolved = Path(home).expanduser().resolve(strict=False)
++        canon = normalize_profile_name(name)
++        if canon == "default":
++            return resolved.parent.name != "profiles"
++        return bool(_PROFILE_ID_RE.fullmatch(canon)) and (
++            resolved.name == canon and resolved.parent.name == "profiles"
++        )
+     except Exception:
+         return False
+ 
 diff --git a/hermes_cli/web_routers/chat_ws.py b/hermes_cli/web_routers/chat_ws.py
 index f7d9c217d6..a8ea15b3b2 100644
 --- a/hermes_cli/web_routers/chat_ws.py

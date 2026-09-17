@@ -34,6 +34,13 @@ with tempfile.TemporaryDirectory(prefix='hermes-host-bridges-') as temp:
     from tui_gateway.ws import WSTransport
     from hermes_state import SessionDB
     from run_agent import AIAgent
+    from hermes_cli.profiles import profile_matches_home
+    other_root = Path(temp) / 'explicit-home'
+    assert profile_matches_home('default', other_root)
+    assert profile_matches_home('alice', other_root / 'profiles' / 'alice')
+    assert not profile_matches_home('alice', other_root / 'profiles' / 'bob')
+    assert not profile_matches_home('default', other_root / 'profiles' / 'alice')
+    checks.append('explicit Hermes home binds default and named awareness profiles without environment mutation')
     native = SessionDB(home / 'state.db')
     agents = []
     providers = []
@@ -155,6 +162,47 @@ with tempfile.TemporaryDirectory(prefix='hermes-host-bridges-') as temp:
         cp.outbox.flush()
         assert case.client.call('/v1/search', {'query':'cedar-clock-657','source':'hermes-host-events'})['episodes']
         checks.append('cron recipient allowlist, changed-destination denial and durable run outcome')
+        # Exercise the awareness bridge against the real profile and memory
+        # provider while replacing only channel I/O. No message leaves this test.
+        from agent.memory_bridge import dispatch_memory_notification
+        from cron import scheduler_delivery
+        awareness_target = [{'platform':'telegram','chat_id':'owner-chat','thread_id':None}]
+        def attested_delivery(job, content):
+            check_cron_delivery(home, job, awareness_target, content)
+            return None
+        with patch.object(scheduler_delivery, '_resolve_delivery_targets', return_value=awareness_target), \
+                patch.object(scheduler_delivery, '_deliver_result', side_effect=attested_delivery):
+            try:
+                dispatch_memory_notification('fixture-no-receipt', 'telegram:owner-chat',
+                                             'Fictional awareness summary', home=home)
+            except RuntimeError as error:
+                assert 'receipt' in str(error)
+            else:
+                raise AssertionError('Missing channel receipt falsely confirmed awareness delivery')
+        def confirmed_delivery(job, content):
+            attested_delivery(job, content)
+            job['_memory_delivery_receipt'] = 'telegram:owner-chat:message-42'
+            return None
+        with patch.object(scheduler_delivery, '_resolve_delivery_targets', return_value=awareness_target), \
+                patch.object(scheduler_delivery, '_deliver_result', side_effect=confirmed_delivery):
+            assert dispatch_memory_notification('fixture-confirmed', 'telegram:owner-chat',
+                                                'Fictional awareness summary', home=home) == \
+                   'telegram:owner-chat:message-42'
+        target = SimpleNamespace(job={'id':'fixture-standalone','_memory_awareness_delivery':True},
+                                 is_relay=False, where='telegram:owner-chat',
+                                 platform_name='telegram', chat_id='owner-chat', thread_id=None,
+                                 mirror_text='', origin_user_id=None, mirror_this_target=False)
+        errors = []
+        with patch.object(scheduler_delivery, '_standalone_send', return_value=({'success':False},None)):
+            scheduler_delivery._deliver_standalone(target, 'Fictional message', [], [], errors)
+        assert errors and '_memory_delivery_receipt' not in target.job
+        errors.clear()
+        with patch.object(scheduler_delivery, '_standalone_send',
+                          return_value=({'success':True,'message_id':'message-43'},None)), \
+                patch.object(scheduler_delivery, '_maybe_mirror_cron_delivery'):
+            scheduler_delivery._deliver_standalone(target, 'Fictional message', [], [], errors)
+        assert not errors and target.job['_memory_delivery_receipt'] == 'telegram:owner-chat:message-43'
+        checks.append('awareness bridge requires attested channel message ID; false standalone success is withheld without external send')
         from personal_memory.host_bridge import check_delivery, continuity
         other=(('telegram','other-chat',''),)
         assert provider('cron',replace(cron,run_id='run-denied',targets=other)).access_allowed is False

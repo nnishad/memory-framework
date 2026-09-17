@@ -24,7 +24,7 @@
     },
     "agent/memory_bridge.py": {
       "before": null,
-      "after": "d5437568d817bb341a52d885f2bd37395295ab96d275c396217ff6afd31c910e"
+      "after": "9c82f959ba29ddf62722fed86fedefe54d20798b29b059978f0e32ba97ebdc57"
     },
     "agent/memory_manager.py": {
       "before": "bd688b6ceecaf63e737516d9a65d2e0db3c3a8c12d5d7ede26c415b609a2898a",
@@ -56,7 +56,7 @@
     },
     "cron/scheduler_delivery.py": {
       "before": "43ea115bba07e6b789a1c8552dd606bd23e43ae6b80332844520e6510f44d96d",
-      "after": "d844fe1e5d1cc2a6aa20a952eafb94cd8ecf33e20841c8b061b62df0dae6e610"
+      "after": "8f0d4f6259d6ea3212610fd28b602a048cf0489db41571e1f12d7b56225afb20"
     },
     "cron/scheduler_prompt.py": {
       "before": "6f780a321e281088d9b247d9833c57a46e36c910ab3151d03e4fa54674918579",
@@ -129,9 +129,13 @@
     "tui_gateway/ws.py": {
       "before": "b7086ddbab17ba2f0ef97f1bd71a3b845f3adcd8fd1acb703e1e89860d68733f",
       "after": "66822fd793e31cfabb234c7f18ecc675444fb0bbe47525ca42c95081f27b9c6d"
+    },
+    "hermes_cli/profiles.py": {
+      "before": "242ce0a765e287b245bb3abf52ce5d4695f22a9c76e8cbcc317daeb7115b6bf0",
+      "after": "8ff77217d920b8660b5ac4f2134a0f4c31e08b9bb90ba826b7a6060c8ba65862"
     }
   },
-  "patch_sha256": "54e70a0127eed1eab68bc4ba13d8335148fdba35e7a673a03c0b8d9b2fcb4e62",
+  "patch_sha256": "b21e72484d74acdbb76e65ffb4b1896410516d1ad2c349c00df2f2b741e4dbee",
   "host_memory_api": 2,
   "native_store_contract": 1,
   "framework_version": "0.8.0rc8"
