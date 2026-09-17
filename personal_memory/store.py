@@ -381,12 +381,18 @@ class Store(Catalog):
         if start and end and end <= start:
             raise ValueError("valid_to must follow valid_from")
         with self.lock, self.connect() as db:
+            # Evidence validation and supersession share one write transaction, so a
+            # retirement racing this creation either runs before validation (the claim
+            # is rejected) or after the insert (the cascade retracts it).
+            db.execute("BEGIN IMMEDIATE")
+            from . import lifecycle
             cid = "clm_" + digest([text, record_id, category, evidence_kind, subject_id, predicate, start, end, supersedes,evidence_quote])[:32]
+            # Replayed claims revalidate too: an idempotent retry must not smuggle
+            # knowledge back in through evidence that has since retired.
+            lifecycle.require_live_evidence(db, [record_id], message="A live evidence record is required")
             existing = db.execute("SELECT * FROM claims WHERE id=?", (cid,)).fetchone()
             if existing:
                 return dict(existing)
-            if not db.execute("SELECT 1 FROM records WHERE id=? AND deleted=0", (record_id,)).fetchone():
-                raise ValueError("A live evidence record is required")
             if evidence_quote is not None and evidence_quote not in db.execute("SELECT text FROM records WHERE id=?",(record_id,)).fetchone()[0]:
                 raise ValueError("Evidence quote does not occur in the cited source")
             if subject_id and not db.execute("SELECT 1 FROM entities WHERE id=?", (subject_id,)).fetchone():

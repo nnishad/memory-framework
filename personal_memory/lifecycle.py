@@ -61,6 +61,9 @@ def retire(db, store, record_id, *, replacement=None, exclude_replacement=False)
         # An account<->person link is only as valid as the evidence supporting it.
         # Restoring visibility later never reconfirms the revoked identity.
         db.execute("UPDATE identity_edges SET status='revoked' WHERE record_id=? AND status!='revoked'", (rid,))
+        # An active claim resting on retired evidence is unsupported knowledge; the
+        # row stays for historical inspection but never remains current.
+        db.execute("UPDATE claims SET status='retracted' WHERE record_id=? AND status='active'", (rid,))
     return hidden
 
 
@@ -90,7 +93,7 @@ def apply_upgrade(store):
                    "(name TEXT NOT NULL, version INTEGER NOT NULL, applied_at TEXT NOT NULL,"
                    " PRIMARY KEY(name,version))")
         if db.execute("SELECT 1 FROM memory_migrations WHERE name=? AND version=?", (name, version)).fetchone():
-            return {"applied": False, "learning": 0, "curated": 0, "identity_edges": 0}
+            return {"applied": False, "learning": 0, "curated": 0, "identity_edges": 0, "claims": 0}
         db.execute("BEGIN IMMEDIATE")
         report = _repair(db, store)
         db.execute("INSERT OR IGNORE INTO memory_migrations VALUES(?,?,?)", (name, version, now()))
@@ -102,11 +105,17 @@ def _repair(db, store):
     # Body of the repair; runs inside the caller's transaction.
     from .learning import invalidate as invalidate_learning
     from .curated import invalidate as invalidate_curated
-    report = {"learning": 0, "curated": 0, "identity_edges": 0}
+    report = {"learning": 0, "curated": 0, "identity_edges": 0, "claims": 0}
     retired = {r[0] for r in db.execute(
         "SELECT id FROM records WHERE deleted=1"
         " UNION SELECT record_id FROM record_visibility WHERE hidden=1")}
     if retired:
+        # Active claims published before the retirement cascade existed lose current
+        # status; superseded history keeps its explicit historical access.
+        report["claims"] = db.execute(
+            "UPDATE claims SET status='retracted' WHERE status='active' AND"
+            " record_id IN (SELECT id FROM records WHERE deleted=1"
+            " UNION SELECT record_id FROM record_visibility WHERE hidden=1)").rowcount
         # Identity links made before the retirement cascade existed must stop
         # expanding person-based recall once their evidence is retired.
         report["identity_edges"] = db.execute(
@@ -132,6 +141,6 @@ def _repair(db, store):
         for rid in sorted(offending):
             invalidate_curated(db, store, rid)
             report["curated"] += 1
-        if report["learning"] or report["curated"] or report["identity_edges"]:
+        if report["learning"] or report["curated"] or report["identity_edges"] or report["claims"]:
             store.audit(db, "retirement_repair", "lifecycle", dict(report))
     return report
