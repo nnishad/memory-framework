@@ -147,6 +147,10 @@ retrieval itself.
 Apply the patch and deploy the framework together on the host that runs Hermes and
 the memory service. Then enable the change journal, configure the foreground and
 background consumers, and supervise `personal-memory awareness-run --continuous`.
+The worker binds its Hermes run to the same `--hermes-home` profile used to locate
+the memory configuration, so profile-specific models, credentials, and cron state
+cannot be mixed. Stream discovery is cached and refreshed at the source poll
+interval; it does not run on every supervisor tick.
 Adapters such as Gmail, WhatsApp, or health data need no Hermes-specific code: they
 write through the same source-sync and change-journal contract.
 

@@ -31,6 +31,36 @@ class DeliveryTestCase(unittest.TestCase):
 
 
 class RuntimeRegistryTests(unittest.TestCase):
+    def test_discovery_is_scheduled_after_a_successful_pass(self):
+        class CountingAdapter(FixtureAdapter):
+            def __init__(self):
+                super().__init__(); self.discoveries = 0
+
+            def discover(self, context):
+                self.discoveries += 1
+                return [stream_spec("messages", modes=["backfill", "incremental"],
+                                    version_order="integer")]
+
+            def read_page(self, context, state):
+                return source_page(page_id="empty", operations=[],
+                    next_state=read_state(cursor={"done": True}, mode=state["mode"],
+                                          state_version=state["state_version"]), complete=True)
+
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
+        store = Store(Path(tmp.name) / "memory.db")
+        adapter = CountingAdapter()
+        runtime = SourceRuntime(store, Path(tmp.name), config={"enabled": False}, adapter=adapter)
+        self.addCleanup(runtime.close)
+        connection = runtime.sync.configure(adapter_id="google.gmail", source="notes-acct1",
+                                            scope={"poll_seconds": 300}, retention="archive")
+        runtime.tick()
+        after_first_tick = adapter.discoveries
+        runtime.tick()
+        self.assertGreater(after_first_tick, 0)
+        self.assertEqual(adapter.discoveries, after_first_tick)
+        status = runtime.status(connection["connection_id"])["connections"][0]
+        self.assertTrue(any(row["role"] == "discovery" for row in status["schedule"]))
+
     def test_registered_non_gmail_adapter_runs_through_service_loop(self):
         class NotesAdapter(FixtureAdapter):
             def discover(self, context):

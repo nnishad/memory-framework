@@ -21,6 +21,19 @@ class WorkerTests(AwarenessFixture):
         self.assertTrue(observed[0]["_memory_awareness_read_only"])
         self.assertEqual(observed[0]["deliver"], "local")
 
+    def test_hermes_adapter_binds_an_explicit_profile_for_the_run(self):
+        observed = []
+        scheduler = types.ModuleType("cron.scheduler")
+        scheduler.run_job = lambda job: (True, "", '{"summary":"reviewed","citations":[],"proposals":[]}', None)
+        constants = types.ModuleType("hermes_constants")
+        constants.set_hermes_home_override = lambda home: observed.append(("set", home)) or "token"
+        constants.reset_hermes_home_override = lambda token: observed.append(("reset", token))
+        with patch.dict(sys.modules, {"cron": types.ModuleType("cron"),
+                                      "cron.scheduler": scheduler,
+                                      "hermes_constants": constants}):
+            hermes_analyze({"batch_id": "abatch_one", "events": []}, hermes_home="/profiles/personal")
+        self.assertEqual(observed, [("set", "/profiles/personal"), ("reset", "token")])
+
     def test_idle_does_not_call_model(self):
         self.consumer("bg", "background")
         called = []

@@ -1,4 +1,5 @@
 import argparse
+import functools
 import json
 import os
 from pathlib import Path
@@ -111,6 +112,7 @@ def main(argv=None):
         if not 5<=args.poll_seconds<=3600:raise ValueError('Poll interval must be 5..3600 seconds')
         cfg=settings(args.hermes_home)
         store=Store(database_path(cfg['data_dir'],'memory'))
+        analyze=functools.partial(hermes_analyze, hermes_home=cfg['_hermes_home'])
         retrieval=None
         def current_retrieval():
             nonlocal retrieval
@@ -122,12 +124,12 @@ def main(argv=None):
             try:
                 while True:
                     outcome=process_once(store,consumer_id=args.consumer_id,
-                                         analyze=hermes_analyze,retrieval=current_retrieval)
+                                         analyze=analyze,retrieval=current_retrieval)
                     if outcome['state']!='complete':time.sleep(args.poll_seconds)
             except KeyboardInterrupt:
                 result={'state':'stopped'}
         else:
-            result=process_once(store,consumer_id=args.consumer_id,analyze=hermes_analyze,
+            result=process_once(store,consumer_id=args.consumer_id,analyze=analyze,
                                 retrieval=current_retrieval)
     elif args.command in {'gmail-connect','sources-status','sources-control'}:
         cfg=settings(args.hermes_home)

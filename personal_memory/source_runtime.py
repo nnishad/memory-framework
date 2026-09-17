@@ -28,6 +28,7 @@ class SourceRuntime:
         self.worker=SyncWorker(self.sync)
         self.stop=threading.Event();self.sync.cancel_event=self.stop
         self.thread=None;self.start_lock=threading.Lock();self.tick_lock=threading.Lock()
+        self.discovered={}
 
     def start(self):
         if self.config.get('enabled',True) is False:return
@@ -96,7 +97,12 @@ class SourceRuntime:
                 db.execute("UPDATE source_jobs SET state='pending',available_at=?,attempts=0 WHERE connection_id=? AND state='quarantined'",(now(),connection_id))
             result={'connection_id':connection_id,'retry_queued':True}
         else:result=getattr(self.sync,action)(connection_id)
-        if action in ('resume','retry'):self.start()
+        if action in ('resume','retry'):
+            # A resumed connection must not wait behind the last successful
+            # discovery interval before it can make progress again.
+            self._schedule(connection_id, 'discovery', 0)
+            self.discovered.pop(connection_id, None)
+            self.start()
         return result
 
     def _schedule(self, cid, role, delay, error=None):
@@ -135,16 +141,22 @@ class SourceRuntime:
                 adapter=self.sync.registry.get(connection['adapter_id'])
                 if adapter is None:
                     continue
-                if not self._due(cid,'discovery'):
-                    continue
-                try:
-                    streams=adapter.discover(self.sync.context(connection))
-                except AdapterError as error:
-                    self._schedule(cid,'discovery',60,error.message)
-                    continue
-                except Exception as error:
-                    self._schedule(cid,'discovery',60,type(error).__name__+': source discovery failed')
-                    continue
+                streams=self.discovered.get(cid)
+                if streams is None or self._due(cid,'discovery'):
+                    try:
+                        streams=adapter.discover(self.sync.context(connection))
+                    except AdapterError as error:
+                        self._schedule(cid,'discovery',60,error.message)
+                        continue
+                    except Exception as error:
+                        self._schedule(cid,'discovery',60,type(error).__name__+': source discovery failed')
+                        continue
+                    self.discovered[cid]=streams
+                    # Discovery may contact an upstream service for dynamic streams or
+                    # partitions. Keep it independent from the one-second supervisor
+                    # loop and refresh it at the connection's normal poll cadence.
+                    discovery_delay = min(max(int(connection['scope'].get('poll_seconds', 300)), 60), 3600)
+                    self._schedule(cid, 'discovery', discovery_delay)
                 passes=[(stream['stream_id'], partition, role)
                         for stream in streams
                         for partition in ([part['id'] for part in stream.get('partitions',[])] or [''])

@@ -102,9 +102,15 @@ def process_once(store, *, consumer_id, analyze, owner=None, retrieval=None):
             return {"state": "stale", "batch_id": lease["batch_id"]}
 
 
-def hermes_analyze(packet):
+def hermes_analyze(packet, *, hermes_home=None):
     """Use Hermes's configured cron model, tools, watchdog and agent teardown."""
     from cron.scheduler import run_job
+    home_token = None
+    if hermes_home is not None:
+        # Hermes exposes a ContextVar-backed override precisely for profile-scoped
+        # callers. Do not mutate HERMES_HOME: a process can host concurrent work.
+        from hermes_constants import set_hermes_home_override
+        home_token = set_hermes_home_override(hermes_home)
 
     prompt = (
         "Review this personal-memory change batch and its bounded original evidence. "
@@ -120,7 +126,12 @@ def hermes_analyze(packet):
            "name": "Personal memory awareness", "prompt": prompt, "deliver": "local",
            "execution_id": uuid.uuid4().hex, "_memory_awareness_read_only": True,
            "max_iterations": 6}
-    success, _output, response, error = run_job(job)
+    try:
+        success, _output, response, error = run_job(job)
+    finally:
+        if home_token is not None:
+            from hermes_constants import reset_hermes_home_override
+            reset_hermes_home_override(home_token)
     if not success:
         raise RuntimeError(error or "Hermes awareness run failed")
     response = response.strip()
