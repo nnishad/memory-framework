@@ -3,7 +3,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from .common import atomic_json,digest
+from .common import atomic_json,atomic_write,digest
 
 
 def _export_skill(home,client,candidate_id,name):
@@ -31,17 +31,9 @@ def _export_skill(home,client,candidate_id,name):
     entries[key]={'candidate_id':candidate_id,'candidate_digest':digest(payload),'family':payload['family'],
                   'sha256':hashlib.sha256(content.encode()).hexdigest(),'previous_sha256':previous['sha256'] if previous else None}
     atomic_json(registry,entries)
-    temporary=target.with_name('SKILL.'+__import__('uuid').uuid4().hex+'.pending')
-    try:
-        with temporary.open('x',encoding='utf-8') as out:
-            temporary.chmod(0o600);out.write(content);out.flush();__import__('os').fsync(out.fileno())
-        __import__('os').replace(temporary,target)
-        import os
-        directory=os.open(target.parent,os.O_RDONLY)
-        try:os.fsync(directory)
-        finally:os.close(directory)
-    finally:
-        if temporary.exists():temporary.unlink()
+    # Deterministic UTF-8 bytes published atomically; directory durability is
+    # only attempted on platforms that support it (skipped on Windows).
+    atomic_write(target,content.encode('utf-8'))
     return {'path':str(target),'candidate_id':candidate_id,'sha256':entries[key]['sha256'],'authority':'explicit operator installation; existing permissions unchanged'}
 
 

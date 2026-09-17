@@ -29,15 +29,24 @@ def timestamp(value):
     return parsed.astimezone(timezone.utc).isoformat()
 
 
-def atomic_json(path, value):
+def atomic_write(path, data, *, encoding="utf-8"):
+    """Durably replace *path* with deterministic bytes.
+
+    Directory durability is best effort and only attempted on platforms that
+    expose ``os.O_DIRECTORY``; Windows rejects ``os.open`` on a directory, so we
+    skip it there rather than fail the write.
+    """
     path = Path(path)
+    if isinstance(data, str):
+        data = data.encode(encoding)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".write-")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, ensure_ascii=False, indent=2)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        os.chmod(tmp, 0o600)
         os.replace(tmp, path)
         if hasattr(os, "O_DIRECTORY"):
             directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -46,3 +55,7 @@ def atomic_json(path, value):
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+def atomic_json(path, value):
+    atomic_write(path, json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8"))
