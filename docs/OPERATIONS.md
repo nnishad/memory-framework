@@ -183,7 +183,10 @@ cascades to every dependent artifact in the same transaction: awareness evidence
 artifacts, curated entries and derived intelligence. A record is only "live and visible"
 when it is undeleted and not hidden; that single check gates creation of beliefs, learning
 artifacts, snapshots, curated memory and consolidation results, so historical evidence can
-still be inspected but can never silently support a current conclusion.
+still be inspected but can never silently support a current conclusion. Progressive recall
+(`/v1/recall`) and parallel investigation (`/v1/investigate`) recheck that same predicate
+during final hydration, so evidence retired while a retrieval round was in flight never
+reaches the answer; explicit `include_history` recall still returns retired evidence.
 
 Restoring a source record's visibility does not reactivate conclusions that were already
 invalidated. An idempotent repair pass scans active artifacts whose evidence is already

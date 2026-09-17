@@ -3,6 +3,7 @@ import time
 import re
 import math
 from .common import required_text
+from . import lifecycle
 
 class AdaptiveRecall:
     def __init__(self,store,backend,config=None):
@@ -71,10 +72,14 @@ class AdaptiveRecall:
         related=self.store.related_ids(filters['entity_id']) if filters.get('entity_id') else None
         with self.store.connect() as db:
             # Rehydrate all candidate IDs after the final search. Never return
-            # stale/deleted text retained from an earlier round.
+            # stale/deleted/hidden text retained from an earlier round.
+            include_history = filters.get('include_history', False)
             for rid,row in pool.items():
                 current=db.execute('SELECT text,source,occurred_at FROM records WHERE id=? AND deleted=0',(rid,)).fetchone()
                 if not current:continue
+                # Forgotten evidence is never available; retired (hidden) evidence only
+                # survives under explicit historical retrieval.
+                if not include_history and not lifecycle.live_and_visible(db, rid):continue
                 if related is not None and rid not in related:continue
                 if filters.get('source') and current['source']!=filters['source']:continue
                 if filters.get('after') and (not current['occurred_at'] or current['occurred_at']<filters['after']):continue
@@ -91,7 +96,7 @@ class AdaptiveRecall:
             selected={r['id'] for r in episodes}
             for cid in claims:
                 row=db.execute("SELECT c.* FROM claims c JOIN records r ON c.record_id=r.id WHERE c.id=? AND r.deleted=0 AND c.status!='retracted'",(cid,)).fetchone()
-                if row and row['record_id'] in selected and (filters.get('include_history') or row['status']=='active'):
+                if row and row['record_id'] in selected and (include_history or lifecycle.live_and_visible(db, row['record_id'])) and (include_history or row['status']=='active'):
                     item=dict(row)
                     size=len(item['text'])+len(item.get('evidence_quote') or '')
                     if used+size<=text_budget:selected_claims.append(item);used+=size

@@ -3,6 +3,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
+from . import lifecycle
 from .common import required_text, timestamp
 from .relevance import terms
 
@@ -76,7 +77,10 @@ class Investigation:
                     queue=queues[b['id']]
                     if not queue or len(episodes)>=limit or used>=text_budget:continue
                     hit=queue.pop(0);rid=hit['id']
-                    row=db.execute("SELECT id,source,source_id,occurred_at,text FROM records WHERE id=? AND deleted=0",(rid,)).fetchone()
+                    # Investigation has no historical mode: only canonical live-and-visible
+                    # evidence may be returned, even if a branch already proposed it.
+                    if not lifecycle.live_and_visible(db, rid):continue
+                    row=db.execute("SELECT id,source,source_id,occurred_at,text FROM records WHERE id=?",(rid,)).fetchone()
                     if not row:continue
                     f=b['filters']
                     if allowed[b['id']] is not None and rid not in allowed[b['id']]:continue
@@ -123,7 +127,7 @@ class Investigation:
                     for edge in graph['edges']:
                         if edge['id'] in edge_ids:continue
                         payload=edge['payload'];evidence=payload['evidence']
-                        if not all(db.execute('SELECT 1 FROM records WHERE id=? AND deleted=0',(e['record_id'],)).fetchone() for e in evidence):continue
+                        if not all(lifecycle.live_and_visible(db, e['record_id']) for e in evidence):continue
                         connection={'id':edge['id'],'from':payload['subject_id'],'predicate':payload['predicate'],'to':payload['object_id'],
                                     'evidence':evidence,'valid_from':payload.get('valid_from'),'valid_to':payload.get('valid_to'),'seed_id':seed,'verification':'reported_relation'}
                         size=len(json.dumps(connection,ensure_ascii=False))
