@@ -150,6 +150,13 @@ class ASGIIntegrationTests(unittest.TestCase):
                 self.assertTrue(client.call('/v1/ready')['ready'])
             finally:
                 server.should_exit=True;thread.join(timeout=10)
+                # Reap the priming worker before the temporary directory goes away:
+                # shutdown gives an in-flight model load only a bounded grace, and a
+                # still-loading thread would leak into other tests' process checks.
+                for _ in range(160):
+                    if not any(t.name=="memory-warmup" and t.is_alive() for t in threading.enumerate()):break
+                    time.sleep(.25)
+                self.assertFalse(any(t.name=="memory-warmup" and t.is_alive() for t in threading.enumerate()))
             self.assertFalse(thread.is_alive())
 
 

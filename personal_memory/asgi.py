@@ -8,7 +8,7 @@ from pathlib import Path
 from .ingestion import ContractError
 from .curated import VersionConflict
 from .service import MemoryService,AccessDenied
-from .trace import TRACE_RESPONSE_HEADER, new_trace, sanitize_trace
+from .trace import LOG, TRACE_RESPONSE_HEADER, new_trace, sanitize_trace
 
 MAX_BODY=2*1024*1024
 
@@ -50,12 +50,37 @@ class Application:
         self.executor=ThreadPoolExecutor(max_workers=8,thread_name_prefix="memory-http")
         self.slots=asyncio.Semaphore(16)
 
+    def _release(self,name):
+        # Close one owned resource. It stays tracked unless the close succeeded,
+        # so an incomplete shutdown is never silently dropped: the next startup
+        # or shutdown retries it. Returns True once the resource is released.
+        resource=getattr(self,name)
+        if resource is None:return True
+        try:
+            resource.close()
+        except Exception as error:
+            LOG.warning("Shutdown of %s incomplete; a later close will retry: %s",name,error)
+            return False
+        setattr(self,name,None)
+        return True
+
+    def _release_all(self):
+        # Reverse construction order; every owned resource gets its attempt even
+        # when an earlier one fails.
+        released=True
+        for name in ("service","hindsight_runtime","lease"):
+            released=self._release(name) and released
+        return released
+
     async def __call__(self,scope,receive,send):
         if scope["type"]=="lifespan":
             while True:
                 message=await receive()
                 if message["type"]=="lifespan.startup":
                     try:
+                        # A prior failed startup may have retained a resource whose
+                        # close failed: retry that cleanup before claiming ownership.
+                        self._release_all()
                         self.lease=ProcessLease(Path(self.settings["data_dir"])/"service.lock")
                         from .hindsight_runtime import Runtime
                         self.hindsight_runtime=Runtime(self.settings).start()
@@ -63,23 +88,37 @@ class Application:
                             retrieval_config=self.settings.get("retrieval",{}),backend=self.settings.get("backend"),
                             principals=self.settings.get("principals",[]),extension_schemas=self.settings.get("extension_schemas",{}),intelligence_config=self.settings.get("intelligence",{}),source_config=self.settings.get('sources',{}))
                         # Prime the lazy retrieval models off the request path so the first Hermes
-                        # turn after a restart is fast instead of paying the ~7.7s cold-start. Run
-                        # in the background: readiness must not block on model/session warm-up.
-                        warm=getattr(self.service.retrieval,"warmup",None)
-                        if callable(warm):
-                            threading.Thread(target=warm,daemon=True,name="memory-warmup").start()
+                        # turn after a restart is fast instead of paying the ~7.7s cold-start. The
+                        # retrieval backend owns the worker: readiness must not block on warm-up,
+                        # and service shutdown drains it before reporting completion.
+                        prime=getattr(self.service.retrieval,"start_warmup",None)
+                        if callable(prime):prime()
+                        else:
+                            warm=getattr(self.service.retrieval,"warmup",None)
+                            if callable(warm):
+                                threading.Thread(target=warm,daemon=True,name="memory-warmup").start()
                         await send({"type":"lifespan.startup.complete"})
                     except Exception as error:
-                        if self.hindsight_runtime:self.hindsight_runtime.close()
-                        if self.lease:self.lease.close()
+                        # Cleanup attempts every owned resource and never masks the
+                        # startup exception, which is the actual diagnosis.
+                        self._release_all()
                         await send({"type":"lifespan.startup.failed","message":type(error).__name__+": inspect configuration/dependencies"})
                         return
                 elif message["type"]=="lifespan.shutdown":
-                    if self.service:self.service.close()
-                    self.executor.shutdown(wait=True,cancel_futures=True)
-                    if self.hindsight_runtime:self.hindsight_runtime.close()
-                    if self.lease:self.lease.close()
-                    await send({"type":"lifespan.shutdown.complete"});return
+                    self._release("service")
+                    try:
+                        self.executor.shutdown(wait=True,cancel_futures=True)
+                    except Exception as error:
+                        LOG.warning("HTTP executor shutdown failed: %s",error)
+                    released=self._release("hindsight_runtime")
+                    released=self._release("lease") and released
+                    if released:
+                        await send({"type":"lifespan.shutdown.complete"})
+                    else:
+                        # Ownership may still be held by an unfinished close; say so
+                        # instead of claiming a clean shutdown.
+                        await send({"type":"lifespan.shutdown.failed","message":"Some resources stayed open; inspect health and retry"})
+                    return
             return
         if scope["type"]!="http":return
         trace = new_trace()

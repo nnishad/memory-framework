@@ -70,6 +70,7 @@ class Hybrid:
             self.temporal_half_life = 365.0
         self.semantic, self.hindsight = semantic, hindsight
         self.errors, self.threads = {}, []
+        self._warmup = None
         self.stop = threading.Event()
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="memory-search")
         # Local embedding index: ENABLED by default as the standard behaviour (a deployment opts
@@ -143,8 +144,13 @@ class Hybrid:
                         self._start_index_thread(component)
             except BaseException:
                 # Partial startup has the same ownership invariant as shutdown:
-                # stop and drain any writers before releasing their lease.
-                self.close()
+                # stop and drain any writers before releasing their lease. An
+                # incomplete cleanup keeps ownership held for a later close()
+                # but never masks the startup exception that is the diagnosis.
+                try:
+                    self.close()
+                except Exception as cleanup_error:
+                    LOG.warning("Partial startup cleanup incomplete: %s", cleanup_error)
                 raise
 
     def _start_index_thread(self, engine):
@@ -192,17 +198,46 @@ class Hybrid:
                 self._start_index_thread(engine)
             return self.semantic
 
-    def close(self):
+    def close(self, join_budget=125.0, warmup_grace=2.0):
         self.stop.set()
         self.pool.shutdown(wait=True, cancel_futures=True)
-        deadline=time.monotonic()+125
+        deadline = time.monotonic() + join_budget
+        # A warm-up worker aborts at its next step boundary once stop is set. An
+        # in-flight third-party model load cannot be interrupted, so it gets a
+        # bounded grace: best-effort priming never holds up shutdown, and the
+        # thread stays tracked so a later close() reaps it once the load lands.
+        if self._warmup is not None:
+            self._warmup.join(timeout=warmup_grace)
+            if self._warmup.is_alive():
+                LOG.warning("Warm-up still loading at close; it aborts at its next step boundary")
         for thread in self.threads:
-            thread.join(timeout=max(0,deadline-time.monotonic()))
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
         # Ownership releases only after every indexing worker has actually stopped;
-        # a still-live writer must never share the journal with a new owner.
-        if self.index_lease is not None and not any(t.is_alive() for t in self.threads):
+        # a still-live writer must never share the journal with a new owner. The
+        # failure is reported so the caller knows shutdown is incomplete, and the
+        # lease stays held: a later close() retries once the writer exits.
+        if self.index_lease is not None:
+            if any(thread.is_alive() for thread in self.threads):
+                raise RuntimeError("Indexing workers outlived the shutdown budget; ownership retained")
             self.index_lease.close()
             self.index_lease = None
+        if self._warmup is not None and not self._warmup.is_alive():
+            self._warmup = None
+
+    def start_warmup(self):
+        """Prime the retrieval models off the request path in an owned thread.
+
+        The warm-up worker is tracked like an indexing worker: close() waits for
+        it to abort at a step boundary, so a reported-clean shutdown never leaves
+        a memory-* thread running against the closed service.
+        """
+        thread = self._warmup
+        if thread is not None and thread.is_alive():
+            return thread
+        thread = threading.Thread(target=self.warmup, daemon=True, name="memory-warmup")
+        self._warmup = thread
+        thread.start()
+        return thread
 
     def warmup(self):
         """Prime the lazily-loaded retrieval models so the first real query is fast.
@@ -213,20 +248,25 @@ class Hybrid:
         once at startup, off the request path, moves that cost out of the first user query. This
         is strictly best-effort: it never raises and never writes to ``self.errors`` (which feeds
         readiness), so a warmup failure just means the first query warms the cache instead.
+
+        Shutdown is cooperative: once close() has set the stop signal, remaining
+        warm-up steps are abandoned so the thread never outlives a running model load
+        by more than one step.
         """
         probe = "warmup"
-        self._ensure_semantic()
-        if self.semantic is not None:
+        if not self.stop.is_set():
+            self._ensure_semantic()
+        if self.semantic is not None and not self.stop.is_set():
             try:
                 self.semantic.embedder.query(probe)
             except Exception:
                 pass
-        if self.hindsight is not None:
+        if self.hindsight is not None and not self.stop.is_set():
             try:
                 self.hindsight.candidates(probe, "fast")
             except Exception:
                 pass
-        if self._rerank_enabled:
+        if self._rerank_enabled and not self.stop.is_set():
             try:
                 self._ensure_reranker()
             except Exception:

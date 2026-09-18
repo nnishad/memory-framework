@@ -173,8 +173,10 @@ class IndexOwnershipTests(unittest.TestCase):
             def is_alive(self): return True
 
         backend.threads.append(Stuck())
-        backend.close()
-        # A live indexing worker means ownership stays held; a second writer is rejected.
+        # An unfinished shutdown is reported, and ownership stays held: a live
+        # indexing worker means a second writer is still rejected.
+        with self.assertRaises(RuntimeError):
+            backend.close()
         try:
             with self.assertRaises(RuntimeError):
                 ProcessLease(self.root / "indexing.lock")

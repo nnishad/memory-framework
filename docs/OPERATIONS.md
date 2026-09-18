@@ -45,7 +45,11 @@ before the indexing lease or any worker exists, and if a later initialization st
 already-created resources are closed in reverse order through the normal shutdown path (so
 indexing ownership stays held until its writers actually stop). The startup error itself is
 always preserved; after a failed start you can correct the configuration and restart in the
-same process against the same data directory.
+same process against the same data directory. Shutdown is likewise retryable: a resource whose
+close did not finish (a writer outliving the join budget, a failing closer) stays tracked while
+the remaining resources still close, so a repeated close - or the next startup - completes the
+cleanup instead of silently dropping it. An unfinished lifespan shutdown is reported as failed
+rather than claiming a clean stop.
 
 The production server binds loopback, uses one Uvicorn process, bounds HTTP concurrency
 and request bodies, rejects browser-origin requests and disables access logs. The

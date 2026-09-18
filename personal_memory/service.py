@@ -419,9 +419,11 @@ class MemoryService:
     def close(self):
         # Reverse construction order. Each resource keeps its own shutdown rules, so
         # indexing ownership stays held until its writers have actually stopped, and
-        # one failing close never skips the remaining resources. Safe to call on a
-        # partially initialized service and safe to repeat.
+        # one failing close never skips the remaining resources. A resource whose
+        # close failed stays tracked so a later close() retries it; safe to call on
+        # a partially initialized service and safe to repeat.
         errors=[]
+        retained=[]
         while getattr(self,"_closables",None):
             resource=self._closables.pop()
             close_fn=getattr(resource,"close",None)
@@ -429,4 +431,6 @@ class MemoryService:
                 if close_fn is not None: close_fn()
             except Exception as error:
                 errors.append(error)
+                retained.append(resource)
+        if retained: self._closables.extend(reversed(retained))
         if errors: raise errors[0]
