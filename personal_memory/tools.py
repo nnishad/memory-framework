@@ -135,9 +135,9 @@ SCHEMAS.append(schema("personal_memory_investigate", "Execute a request-specific
     "timeout":field("integer",minimum=1,maximum=25),"graph_hops":field("integer",minimum=0,maximum=2)},["goal","branches"]))
 ROUTES["personal_memory_investigate"]="/v1/investigate"
 GUIDANCE += """
-For investigate, create focused branches for who/what/when and useful paraphrases or
-translations. Refine unresolved branches from sourced names or dates and stop after two
-unchanged attempts. The Hermes model plans; the server executes the plan without another
-planning LLM call. Native history is partial unless coverage explicitly says otherwise.
+For personal_memory_investigate, create focused branches for who/what/when and useful
+paraphrases or translations. Refine unresolved branches from sourced names or dates and stop
+after two unchanged attempts. The Hermes model plans; the server executes the plan without
+another planning LLM call. Native history is partial unless coverage explicitly says otherwise.
 Native session_search lacks canonical lineage and must not be saved as a new fact.
 """

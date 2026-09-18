@@ -89,3 +89,9 @@ class InvestigationTests(unittest.TestCase):
         self.assertEqual(r['episodes'],[])
         self.assertEqual(r['verification_required'],['blood'])
         self.assertGreater(r['diagnostics']['variant_drift_rejected'],0)
+
+    def test_model_guidance_names_the_investigate_tool_callable(self):
+        # The release gate proves the copied provider's system prompt advertises the
+        # investigate tool under the exact name the host registers in the tool surface.
+        from personal_memory.tools import GUIDANCE
+        self.assertIn('personal_memory_investigate',GUIDANCE)
