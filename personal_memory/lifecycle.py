@@ -16,7 +16,11 @@ from .common import now
 
 # Bump the version when a new archive-wide repair must run once per database.
 # Version 2 additionally revokes identity links whose supporting evidence is retired.
-REPAIR_MIGRATION = ("retirement_repair", 2)
+# Version 3 distinguishes evidence retirement from retraction: claims resting on
+# retired (hidden, not forgotten) evidence become 'retired' history instead of
+# 'retracted', and the conservative migration reclassifies only those retirements
+# whose reason is established in the database - unexplained retractions survive.
+REPAIR_MIGRATION = ("retirement_repair", 3)
 
 
 def _descendants(db, root):
@@ -62,8 +66,9 @@ def retire(db, store, record_id, *, replacement=None, exclude_replacement=False)
         # Restoring visibility later never reconfirms the revoked identity.
         db.execute("UPDATE identity_edges SET status='revoked' WHERE record_id=? AND status!='revoked'", (rid,))
         # An active claim resting on retired evidence is unsupported knowledge; the
-        # row stays for historical inspection but never remains current.
-        db.execute("UPDATE claims SET status='retracted' WHERE record_id=? AND status='active'", (rid,))
+        # row never remains current, but retirement is not retraction: it stays
+        # available to explicit historical retrieval as 'retired'.
+        db.execute("UPDATE claims SET status='retired' WHERE record_id=? AND status='active'", (rid,))
     if hidden:
         # Retired evidence must leave every rebuildable index; the durable queue
         # row commits with the visibility write, so no sweep can miss it.
@@ -117,10 +122,22 @@ def _repair(db, store):
     if retired:
         # Active claims published before the retirement cascade existed lose current
         # status; superseded history keeps its explicit historical access.
-        report["claims"] = db.execute(
+        demoted = db.execute(
+            "UPDATE claims SET status='retired' WHERE status='active' AND"
+            " record_id IN (SELECT record_id FROM record_visibility WHERE hidden=1) AND"
+            " record_id IN (SELECT id FROM records WHERE deleted=0)").rowcount
+        demoted += db.execute(
             "UPDATE claims SET status='retracted' WHERE status='active' AND"
-            " record_id IN (SELECT id FROM records WHERE deleted=1"
-            " UNION SELECT record_id FROM record_visibility WHERE hidden=1)").rowcount
+            " record_id IN (SELECT id FROM records WHERE deleted=1)").rowcount
+        # Conservative migration of legacy rows: the old cascade marked retired
+        # evidence's claims 'retracted'. Reclassify only where retirement is
+        # established (hidden, not forgotten, content intact); a 'retracted' claim
+        # whose reason cannot be established is never resurrected.
+        demoted += db.execute(
+            "UPDATE claims SET status='retired' WHERE status='retracted' AND text<>'' AND"
+            " record_id IN (SELECT record_id FROM record_visibility WHERE hidden=1) AND"
+            " record_id IN (SELECT id FROM records WHERE deleted=0)").rowcount
+        report["claims"] = demoted
         # Identity links made before the retirement cascade existed must stop
         # expanding person-based recall once their evidence is retired.
         report["identity_edges"] = db.execute(

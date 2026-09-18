@@ -233,6 +233,14 @@ invalidated. An idempotent repair pass scans active artifacts whose evidence is 
 retired and invalidates them; re-running it changes nothing. Queued consolidation applies
 the same pass before accepting a proposal.
 
+Retirement is not retraction. A claim resting on retired (hidden, not forgotten) evidence
+becomes status "retired": excluded from ordinary recall, visible only under explicit
+`include_history` retrieval, and never reactivated by restoring the evidence. Forgetting
+keeps its claim withdrawn in every mode, and the versioned migration reclassifies legacy
+"retracted" rows to "retired" only where retirement is established in the database (hidden
+evidence with intact content); a retraction whose reason cannot be established is never
+resurrected.
+
 `python -m personal_memory prune-hindsight --hermes-home <profile>` reports stale
 framework-owned embedded profiles/instances. Add `--apply` to remove eligible stale entries;
 the active profile is preserved. Stop the service before applying removal so a daemon does
