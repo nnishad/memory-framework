@@ -408,6 +408,7 @@ class MemoryService:
             engine=status.get(name,{})
             if engine.get("error"):problems.append(name+": worker error")
             if engine.get("pending_records",0):problems.append(name+": indexing backlog")
+            if engine.get("pending_retirements",0):problems.append(name+": retirement backlog")
             if engine.get("pending_deletions",0):problems.append(name+": deletion backlog")
             # A reset's external cleanup is durable and resumable, but the engine is not
             # finished until the remote bank is confirmed empty.

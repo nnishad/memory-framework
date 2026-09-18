@@ -146,9 +146,19 @@ the same revision; submit a corrected revision. Transient network failures remai
 Semantic index maintenance is incremental. Canonical writes enqueue durable
 index/retire requests in the same transaction; each background poll processes
 only due queue entries in bounded batches, so an idle poll touches the queue
-and never scans the archive. Failed records stay queued with durable retry
-backoff, survive restarts and coalesce per record. A pre-existing archive is
-bootstrapped into the queue exactly once per model revision key. Embedding
+and never scans the archive. The queue carries one desired-state row per record
+with a monotonically increasing revision: coalescing keeps the newest signal,
+retry state survives on the row, and acknowledgment only consumes the revision
+actually processed, so work arriving during processing is never lost. Failed
+records stay queued with durable retry backoff and survive restarts. Durable
+vector creation is distinct from publication into the running search index: a
+failed publication keeps the work retryable, retries from stored vectors
+without another embedding call, and readiness reports the gap. Each model revision
+keeps its own position in an append-only change history and replays exactly the
+changes that happened while it was inactive; a new or history-starved revision
+falls back to a bounded canonical reconciliation instead of the former
+once-per-revision bootstrap. Legacy queues and bootstrap markers migrate in
+place at open. Embedding
 failures are recorded per record and retried. Model-weight/config changes
 produce a different index key; old indexes are rebuildable derived state. Do not
 edit canonical records to repair an index. A changed remote embedding

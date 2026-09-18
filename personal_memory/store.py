@@ -85,9 +85,10 @@ class Store(Catalog):
             db.executescript(CURATED_SCHEMA)
             from .source_sync import SCHEMA as SOURCE_SYNC_SCHEMA
             db.executescript(SOURCE_SYNC_SCHEMA)
-            # The semantic work queue must exist before any ingest can enqueue.
-            from .semantic import WORK_SCHEMA
-            db.executescript(WORK_SCHEMA)
+            # The semantic work queue must exist before any ingest can enqueue,
+            # and a legacy queue shape must migrate before that first write.
+            from . import semantic
+            semantic.ensure_schema(db)
             # Discovery retry state is interpreted against the configuration that
             # produced it; older databases only carried the deadline.
             if "config_key" not in {r[1] for r in db.execute("PRAGMA table_info(source_schedule)")}:
