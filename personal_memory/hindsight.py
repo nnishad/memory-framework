@@ -126,8 +126,13 @@ class Hindsight:
                 stale = [] if self._epoch(db) == selected_epoch else ids
             dropped = stale or [rid for rid in ids if rid not in live]
             if dropped:
+                # "Do not retain this record again" never erases "a remote copy may
+                # exist and must be erased": an earlier retain may have persisted
+                # while its acknowledgment was lost. The pending row stays and is
+                # made due now, so the deletion pass converts it into a confirmed
+                # remote erasure instead of an untracked orphan.
                 with self.store.connect() as db:
-                    db.executemany("DELETE FROM hindsight_pending WHERE backend=? AND record_id=?",
+                    db.executemany("UPDATE hindsight_pending SET next_retry=0 WHERE backend=? AND record_id=?",
                                    [(self.key, rid) for rid in dropped])
                 rows = [row for row in rows if row["id"] not in set(dropped)]
         if rows:
