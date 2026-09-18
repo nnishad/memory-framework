@@ -147,7 +147,15 @@ class ASGIIntegrationTests(unittest.TestCase):
                 self.assertEqual(client.call('/v1/search',{'query':'bicycle'})['episodes'][0]['id'],rid)
                 with self.assertRaises(ServiceError) as error:client.call('/v1/forget',{'record_id':rid})
                 self.assertEqual(error.exception.status,403)
-                self.assertTrue(client.call('/v1/ready')['ready'])
+                # Readiness reflects actual usability: it reports false while the background
+                # warm-up and the ingestion's indexing queue are still landing, then stays
+                # true. Wait for that convergence (as the release gates do) instead of racing
+                # a single sample against a cold model load.
+                deadline=time.monotonic()+120
+                while time.monotonic()<deadline and not client.call('/v1/ready')['ready']:
+                    time.sleep(.1)
+                self.assertTrue(client.call('/v1/ready')['ready'],
+                                f"readiness never converged: {client.call('/v1/status')}")
             finally:
                 server.should_exit=True;thread.join(timeout=10)
                 # Reap the priming worker before the temporary directory goes away:
