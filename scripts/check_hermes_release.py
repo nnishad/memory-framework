@@ -60,6 +60,18 @@ with tempfile.TemporaryDirectory() as tmp:
             except Exception:
                 if process.poll() is not None or time.monotonic()>deadline:raise RuntimeError('ASGI launcher failed')
                 time.sleep(.02)
+        # The service deliberately primes retrieval models in the background, and searches
+        # block on that one-time initialization. Wait for the warm-up (ONNX embedder,
+        # cross-encoder, Hindsight daemon) before timing-sensitive assertions, or a slow
+        # first boot pushes investigate past its in-request deadline. Readiness alone is
+        # not enough: it stays engine-queue-focused by design.
+        deadline=time.monotonic()+240
+        while True:
+            state=client.call('/v1/status',{})
+            if (state.get('semantic',{}).get('ready') and
+                    (not state.get('rerank',{}).get('enabled') or state['rerank'].get('loaded'))):break
+            if process.poll() is not None or time.monotonic()>deadline:raise RuntimeError('retrieval warm-up did not converge')
+            time.sleep(.25)
         manager.add_provider(provider)
         manager.initialize_all('session-a',hermes_home=str(home),platform='cli',agent_context='primary',user_id='synthetic-owner')
         assert provider.client is not None
@@ -182,7 +194,10 @@ with tempfile.TemporaryDirectory() as tmp:
         assert found['episodes']
         assert not json.loads(manager.handle_tool_call('personal_memory_search',{'query':'DERIVATIVE_SHOULD_NOT_BE_CAPTURED'}))['episodes']
         with patch.object(provider.outbox,'enqueue',side_effect=OSError('synthetic disk failure')):
-            try:manager.on_pre_compress(direct,evidence_messages=direct,require_checkpoint=True)
+            # A distinct message defeats the capture dedup, so the injected failure is the
+            # path actually exercised; the host must propagate it for a required checkpoint.
+            failing=[{'role':'user','content':'Checkpoint failure probe: amber briefcase.'}]
+            try:manager.on_pre_compress(failing,evidence_messages=failing,require_checkpoint=True)
             except OSError:pass
             else:raise AssertionError('Required checkpoint failure was swallowed')
         passed('normalized checkpoint-v2 evidence and host fail-closed propagation')
@@ -218,13 +233,15 @@ with tempfile.TemporaryDirectory() as tmp:
             blocked.shutdown()
         passed('real loaded provider withholds tools, recall and capture from unauthorized/shared sessions')
         from hermes_cli.backup import _write_full_zip_backup
-        import zipfile,sqlite3
+        import zipfile,sqlite3,contextlib
         backup_file=Path(tmp)/'native-backup.zip'
         assert _write_full_zip_backup(backup_file,home)==backup_file
         with zipfile.ZipFile(backup_file) as z:
             raw=z.read('personal-memory/data/memory.db')
             restored=Path(tmp)/'native-restored.db';restored.write_bytes(raw)
-            with sqlite3.connect(restored) as db:
+            # A `with sqlite3.connect(...)` block only commits; on Windows the lingering
+            # handle blocks the TemporaryDirectory teardown at the end of the gate.
+            with contextlib.closing(sqlite3.connect(restored)) as db:
                 assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
                 assert db.execute('SELECT count(*) FROM records WHERE deleted=0').fetchone()[0]==client.call('/v1/status')['records']
             assert 'personal-memory/outbox.db' in z.namelist()
