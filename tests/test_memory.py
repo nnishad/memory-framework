@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -212,6 +213,42 @@ class ServerTests(HTTPFixture):
     def test_non_loopback_http_rejected(self):
         with self.assertRaises(ValueError): Client("http://example.com", self.token)
         with self.assertRaises(ValueError): create_server(Path(self.tmp.name), self.token, host="0.0.0.0")
+
+
+class CliTests(HTTPFixture):
+    """Regression: a `from .client import Client` that was local to one CLI branch made Client
+    a function-local name for all of main(), so every other branch raised UnboundLocalError.
+    No unit-level test reached that path; only launching the module as a script does."""
+
+    def home(self):
+        home = Path(self.tmp.name) / "hermes"
+        install(home)
+        path = home / "personal-memory" / "settings.json"
+        cfg = json.loads(path.read_text())
+        cfg.update(url=self.client.url, token=self.token)
+        path.write_text(json.dumps(cfg))
+        public = home / "personal-memory" / "config.json"
+        values = json.loads(public.read_text()); values.pop("port", None); public.write_text(json.dumps(values))
+        return home
+
+    def cli(self, *args):
+        return subprocess.run([sys.executable, "-m", "personal_memory", *args],
+                              capture_output=True, text=True, timeout=180)
+
+    def test_import_jsonl_and_status_share_the_module_level_client(self):
+        home = self.home()
+        source = Path(__file__).resolve().parents[1] / "examples" / "encounters.jsonl"
+        first = self.cli("import-jsonl", "--hermes-home", str(home), str(source))
+        self.assertEqual(first.returncode, 0, first.stderr[-2000:])
+        imported = json.loads(first.stdout)
+        self.assertGreaterEqual(imported["processed"], 1)
+        # Replay through the same branch: canonical duplicates, no silent breakage.
+        second = self.cli("import-jsonl", "--hermes-home", str(home), str(source))
+        self.assertEqual(second.returncode, 0, second.stderr[-2000:])
+        self.assertEqual(json.loads(second.stdout)["duplicates"], imported["processed"])
+        status = self.cli("status", "--hermes-home", str(home))
+        self.assertEqual(status.returncode, 0, status.stderr[-2000:])
+        self.assertGreaterEqual(json.loads(status.stdout)["records"], imported["processed"])
 
 
 class SetupTests(unittest.TestCase):

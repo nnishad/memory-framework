@@ -110,7 +110,6 @@ def main(argv=None):
         from .awareness_worker import (process_once, hermes_analyze, deliver_once,
                                        hermes_deliver, made_progress, ServiceRetrieval)
         from . import awareness
-        from .client import Client
         from .store import Store
         from .storage import database_path
         if not 5<=args.poll_seconds<=3600:raise ValueError('Poll interval must be 5..3600 seconds')
