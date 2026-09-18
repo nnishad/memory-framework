@@ -232,7 +232,8 @@ class GmailAdapter(SourceAdapter):
         else:next_cursor={'history':boundary}
         identity=[cursor,next_cursor,[(o['source_id'],o['source_version'],o['action']) for o in operations]]
         return source_page(page_id='history-'+digest(identity)[:24],operations=operations,
-                           next_state=read_state(cursor=next_cursor,mode=mode))
+                           next_state=read_state(cursor=next_cursor,mode=mode),
+                           more=bool(next_cursor.get('page') or next_cursor.get('offset')))
 
     def attachment(self, context, descriptor):
         mid=quote(descriptor['message_id'],safe='')

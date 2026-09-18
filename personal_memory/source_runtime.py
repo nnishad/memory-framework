@@ -124,7 +124,7 @@ class SourceRuntime:
 
     def _schedule_row(self,cid,role):
         with self.store.connect() as db:
-            return db.execute('SELECT next_at,config_key FROM source_schedule WHERE connection_id=? AND role=?',(cid,role)).fetchone()
+            return db.execute('SELECT next_at,config_key,error FROM source_schedule WHERE connection_id=? AND role=?',(cid,role)).fetchone()
 
     def _declarations(self, cid, connection, adapter):
         """Resolve validated adapter declarations exactly once per refresh interval.
@@ -147,7 +147,14 @@ class SourceRuntime:
             cached=self.discovered.get(cid)
             if cached is not None and cached[0]==fingerprint:
                 return cached[1]                 # valid cache for this configuration
-            return None                          # honor this configuration's persisted deadline
+            # A fresh process carries no cache: a successful refresh deadline
+            # must not strand durable in-flight work across a restart, so it
+            # resolves once and rearms. Only a retry backoff - a deadline that
+            # carries an error - holds a restarted runtime off the adapter.
+            if row[2] is None:
+                due=True
+            else:
+                return None                      # honor this configuration's persisted backoff
         self.discovered.pop(cid,None)            # discard declarations of a superseded config
         try:
             streams=adapter.discover(self.sync.context(connection))
@@ -199,7 +206,6 @@ class SourceRuntime:
                 # high-water mark before any pass, so signals arriving during this
                 # tick survive acknowledgment of the work already covered.
                 signals=self.sync.take_signals(cid)
-                caught_up=False;pass_failed=False
                 streams=self._declarations(cid, connection, adapter)
                 if streams is None:continue
                 passes=[(stream['stream_id'], partition, role)
@@ -210,6 +216,11 @@ class SourceRuntime:
                         (role=='reconcile' and connection['scope'].get('reconcile_seconds',0)>=60)]
                 passes.sort(key=lambda item: ({'incremental':0,'backfill':1,'reconcile':2}[item[2]],
                                               item[0], item[1]))
+                # Catch-up is tracked per required incremental stream/partition:
+                # a converged pass on one feed can never stand in for a skipped,
+                # still-paging or failed pass on another, in either order.
+                required=[(stream,partition) for stream,partition,role in passes if role=='incremental']
+                covered={}
                 for stream, partition, role in passes:
                     if self.stop.is_set():return
                     schedule_key=(role if connection['adapter_id']=='google.gmail'
@@ -234,36 +245,40 @@ class SourceRuntime:
                         result=self.worker.run_once(cid,stream=stream,partition=partition,role=role,ttl=900,declarations=streams)
                         status=result['status']
                         if status=='resync_required':
-                            if role=='incremental':pass_failed=True
+                            if role=='incremental':covered[(stream,partition)]=False
                             if connection['adapter_id']=='google.gmail':
                                 self._recover_cursor(cid);continue
                             self._schedule(cid,schedule_key,3600,'Source cursor requires explicit rescan')
                             continue
                         if status in ('retry','failed','needs_auth'):
-                            if role=='incremental':pass_failed=True
+                            if role=='incremental':covered[(stream,partition)]=False
                             self._schedule(cid,schedule_key,max(30,result.get('retry_after') or 60),result.get('reason','Source sync failed'))
                         else:
-                            cursor=self.sync.stream_state(cid,stream,partition=partition,role=role)['cursor'] or {}
-                            if role=='incremental' and not cursor.get('page') and not cursor.get('offset'):
-                                caught_up=True
-                                delay=connection['scope'].get('poll_seconds',300)
-                            elif role=='reconcile' and cursor.get('done'):
-                                delay=connection['scope']['reconcile_seconds']
+                            if role=='incremental':
+                                # Completion is the adapter contract's continuation
+                                # declaration, not a Gmail-shaped cursor field.
+                                caught=not bool(result.get('more',False))
+                                covered[(stream,partition)]=caught
+                                self._schedule(cid,schedule_key,
+                                               connection['scope'].get('poll_seconds',300) if caught else 0)
                             else:
-                                if role=='incremental':caught_up=False  # still catching up
-                                delay=0
-                            self._schedule(cid,schedule_key,delay)
+                                cursor=self.sync.stream_state(cid,stream,partition=partition,role=role)['cursor'] or {}
+                                if role=='reconcile' and cursor.get('done'):
+                                    self._schedule(cid,schedule_key,connection['scope']['reconcile_seconds'])
+                                else:
+                                    self._schedule(cid,schedule_key,0)
                     except AdapterError as error:
-                        if role=='incremental':pass_failed=True
+                        if role=='incremental':covered[(stream,partition)]=False
                         if error.kind=='auth':self.sync._set_state(cid,'needs_auth')
                         self._schedule(cid,schedule_key,60,error.message)
                     except Exception as error:
-                        if role=='incremental':pass_failed=True
+                        if role=='incremental':covered[(stream,partition)]=False
                         self._schedule(cid,schedule_key,60,type(error).__name__+': source pass failed')
-                if signals['count'] and caught_up and not pass_failed:
-                    # Only a converged, fully successful incremental coverage of the
-                    # captured high-water mark acknowledges; everything after it
-                    # (including mid-pass arrivals) stays pending for the next pass.
+                if signals['count'] and required and all(covered.get(key) for key in required):
+                    # Only a tick with converged, fully successful coverage of
+                    # every required incremental feed acknowledges the captured
+                    # high-water mark; anything after it (including mid-pass
+                    # arrivals) stays pending for the next pass.
                     self.sync.ack_signals(cid,up_to=signals['up_to'])
                 if not self.stop.is_set():self._attachment(cid)
         finally:self.tick_lock.release()

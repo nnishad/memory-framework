@@ -67,7 +67,8 @@ class FeedAdapter(FixtureAdapter):
             records=[note_record(source_id, source=context["source"])])
             for index, source_id in enumerate(batch)]
         end = start + len(batch)
-        if len(self.items) > end:
+        more = len(self.items) > end
+        if more:
             next_cursor = {"page": end // self.page_size}
         else:
             next_cursor = {"done": True, "head": end}
@@ -75,7 +76,7 @@ class FeedAdapter(FixtureAdapter):
                            operations=operations,
                            next_state=read_state(cursor=next_cursor, mode=state["mode"],
                                                  state_version=state["state_version"]),
-                           complete=True)
+                           complete=True, more=more)
 
 
 class NotesFeedAdapter(FeedAdapter):

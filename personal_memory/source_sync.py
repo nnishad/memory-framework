@@ -789,6 +789,7 @@ class SyncWorker:
             result = self.sync.commit_page(lease, op_id=op_id, page=page, declarations=declarations)
             terminal = bool(page['complete']) and not page['operations']
             return {"status": "complete" if terminal else "committed",
+                    "more": bool(page.get("more", False)),
                     "applied": result["applied"], "suppressed": result["suppressed"],
                     "history_only": result["history_only"], "skipped": result["skipped"],
                     "replayed": result["replayed"], "page_complete": result["page_complete"]}

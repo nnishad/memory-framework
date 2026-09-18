@@ -164,8 +164,16 @@ def normalized_item(source_id, *, records, head_version=None, attachments=(), pr
             "projections": copy.deepcopy(list(projections))}
 
 
-def source_page(*, page_id, operations, next_state, complete=True, coverage=()):
-    """A bounded unit of progress. Empty and removal-only pages are first-class."""
+def source_page(*, page_id, operations, next_state, complete=True, coverage=(), more=False):
+    """A bounded unit of progress. Empty and removal-only pages are first-class.
+
+    ``more`` is the contract-level continuation flag: the adapter declares
+    True when ``next_state`` still represents unfinished catch-up work on this
+    stream, and only that declaration - never a cursor field shape - tells
+    the runtime a required pass has converged.
+    """
+    if type(more) is not bool:
+        raise ContractError("$.more", "Must be boolean")
     observed_ids = set()
     for operation in operations:
         if operation["source_id"] in observed_ids:
@@ -183,14 +191,14 @@ def source_page(*, page_id, operations, next_state, complete=True, coverage=()):
     return {"page_id": _text(page_id, "page_id", 200),
             "operations": copy.deepcopy(list(operations)),
             "next_state": next_state, "complete": bool(complete),
-            "coverage": observations}
+            "more": bool(more), "coverage": observations}
 
 
 def validate_page(page):
     """Runtime-side validation; adapter output cannot advance state until this passes."""
     if not isinstance(page, dict):
         raise ContractError("$", "page must be an object")
-    unknown = set(page) - {"page_id", "operations", "next_state", "complete", "coverage"}
+    unknown = set(page) - {"page_id", "operations", "next_state", "complete", "coverage", "more"}
     if unknown:
         raise ContractError("$", f"Unknown page field(s): {sorted(unknown)}")
     for field in ("page_id", "operations", "next_state", "complete"):
@@ -203,6 +211,8 @@ def validate_page(page):
         raise ContractError("$", "Page exceeds 64 MiB")
     if type(page['complete']) is not bool:
         raise ContractError('$.complete', 'Must be boolean')
+    if 'more' in page and type(page['more']) is not bool:
+        raise ContractError('$.more', 'Must be boolean')
     if not isinstance(page['operations'], list) or len(page['operations']) > 1000:
         raise ContractError('$.operations', 'Expected at most 1000 operations')
     seen = set()
@@ -234,10 +244,13 @@ def validate_page(page):
         raise ContractError("$.next_state.mode", "Unknown read mode")
     read_state(**state)
     source_page(page_id=page['page_id'], operations=page['operations'],
-                next_state=state, complete=page['complete'], coverage=page.get('coverage', []))
+                next_state=state, complete=page['complete'], coverage=page.get('coverage', []),
+                more=page.get('more', False))
     return page
 
 
+# "more" is deliberately excluded: it is scheduling metadata, not page content,
+# so replay identity stays stable for receipts committed before it existed.
 PAGE_DIGEST_FIELDS = ("page_id", "operations", "coverage", "next_state", "complete")
 
 

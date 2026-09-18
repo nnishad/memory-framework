@@ -478,11 +478,17 @@ Durable inbox signals now drive ingestion scheduling (source-neutral, role-based
 Each supervisor tick captures one high-water mark per active connection before any
 pass. A non-empty mark bypasses the ordinary incremental polling delay for one
 bounded pass, but never a pause, an authentication park or a schedule row carrying
-a retry backoff. Acknowledgment happens only after a converged incremental pass
-with no failed incremental pass in the same tick, and only up to the captured
-mark, so repeated signals coalesce into one pass, multi-page catch-up defers
-acknowledgment until it completes, and a signal arriving during a pass survives
-to schedule its own follow-up. Failures leave every signal durably queued.
+a retry backoff. Incremental completion is an explicit adapter-contract fact: a
+page declares `more=True` while its `next_state` is still unfinished catch-up, and
+the runtime never interprets cursor field names. Acknowledgment happens only after
+every required incremental stream and partition has converged successfully in the
+same tick - a skipped, still-paging or failed feed holds the whole mark back - and
+only up to the captured mark, so repeated signals coalesce into one pass, multi-page
+catch-up defers acknowledgment until it completes, and a signal arriving during a
+pass survives to schedule its own follow-up. Failures leave every signal durably
+queued, and a restart mid-catch-up resumes coverage: a persisted successful
+discovery deadline never strands in-flight work, while an error-bearing retry
+deadline stays honored.
 
 Efficiency: 250+ records commit per internal transaction (not bound by the HTTP
 100 cap), WAL + `busy_timeout` already in `Store`, one transaction per page.
