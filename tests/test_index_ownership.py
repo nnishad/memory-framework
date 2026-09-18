@@ -69,12 +69,22 @@ def start_hindsight_server(counts):
     return server, shutdown
 
 
+def _env_restore(case, key, previous):
+    """Return one environment variable to its exact prior state (value or absence) after the
+    test, so kill-switch settings never leak between model-loading behaviours in one process."""
+    def restore():
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+    case.addCleanup(restore)
+
+
 class IndexOwnershipTests(unittest.TestCase):
     def setUp(self):
-        os.environ["PERSONAL_MEMORY_DISABLE_SEMANTIC"] = "1"
-        os.environ["PERSONAL_MEMORY_DISABLE_RERANK"] = "1"
-        self.addCleanup(os.environ.pop, "PERSONAL_MEMORY_DISABLE_SEMANTIC", None)
-        self.addCleanup(os.environ.pop, "PERSONAL_MEMORY_DISABLE_RERANK", None)
+        for key in ("PERSONAL_MEMORY_DISABLE_SEMANTIC", "PERSONAL_MEMORY_DISABLE_RERANK"):
+            _env_restore(self, key, os.environ.get(key))
+            os.environ[key] = "1"
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -118,7 +128,7 @@ class IndexOwnershipTests(unittest.TestCase):
             def sync(self, *args, **kwargs): syncs.append(1)
 
         saved = os.environ.pop("PERSONAL_MEMORY_DISABLE_SEMANTIC", None)
-        self.addCleanup(os.environ.__setitem__, "PERSONAL_MEMORY_DISABLE_SEMANTIC", saved)
+        _env_restore(self, "PERSONAL_MEMORY_DISABLE_SEMANTIC", saved)
         with patch.object(Hybrid, "_start_index_thread", lambda self, engine: started.append(engine)), \
              patch("personal_memory.semantic.SemanticIndex", FakeSemantic):
             reader = load_backend(store, config={"rerank": {"enabled": False}}, index_owner=False)
@@ -144,7 +154,7 @@ class IndexOwnershipTests(unittest.TestCase):
             def sync(self, *args, **kwargs): pass
 
         saved = os.environ.pop("PERSONAL_MEMORY_DISABLE_SEMANTIC", None)
-        self.addCleanup(os.environ.__setitem__, "PERSONAL_MEMORY_DISABLE_SEMANTIC", saved)
+        _env_restore(self, "PERSONAL_MEMORY_DISABLE_SEMANTIC", saved)
         with patch("personal_memory.semantic.SemanticIndex", FakeSemantic):
             owner = load_backend(store, config={"rerank": {"enabled": False}})
             self.addCleanup(owner.close)

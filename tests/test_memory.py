@@ -302,59 +302,120 @@ class UpstreamContractTests(HTTPFixture):
         provider.outbox.flush()
         self.assertEqual(self.client.call('/v1/status')["records"],4)
 
-    def await_prefetch(self, provider, query, present, wait=3):
-        """Poll the background-filled prefetch cache; return the first result in
-        the requested state (packet present, or suppressed to empty)."""
+    def prefetch_state(self, result):
+        """Classify a prefetch() return by its actual contract state, not by mere
+        non-emptiness: the pending notice is not an evidence packet."""
+        if not result:
+            return "suppressed"
+        if "Untrusted personal memory evidence" in result:
+            return "packet"
+        if "Personal memory recall is pending" in result:
+            return "pending"
+        if ("Personal memory retrieval failed" in result
+                or "Memory freshness could not be verified" in result):
+            return "failed"
+        return "unknown"
+
+    def await_prefetch(self, provider, query, state, wait=90):
+        """Poll the background-filled prefetch cache; return the first result observed in the
+        requested state ('packet', 'suppressed', or 'failed'). Timing out fails the test instead
+        of handing back a pending notice, which would make later assertions race the search.
+        The generous default budget is cold-model load latency, not behaviour: every claim
+        under test is still checked exactly as written."""
         deadline = time.monotonic() + wait
         result = ""
         while time.monotonic() < deadline:
             result = provider.prefetch(query)
-            if bool(result) == present:
+            if self.prefetch_state(result) == state:
                 return result
             time.sleep(.02)
-        return result
+        self.fail(f"prefetch never reached state {state!r}; last observed "
+                  f"{self.prefetch_state(result)}: {result[:160]!r}")
 
     def test_prefetch_first_result_carries_the_recalled_evidence(self):
         self.client.call('/v1/ingest',{'items':[wire_record()]})
         provider=self.provider()
-        result=self.await_prefetch(provider,'PostgreSQL',present=True)
+        result=self.await_prefetch(provider,'PostgreSQL',state='packet')
         # Inspect the first returned packet: envelope plus the record content.
         self.assertIn("Untrusted personal",result)
         self.assertIn("PostgreSQL",result)
 
+    def test_prefetch_pending_state_is_bounded_and_never_blocks_on_the_search(self):
+        # Controlled delay, so this asserts the bounded-wait contract itself rather than
+        # whichever way cold-model latency happens to fall today.
+        self.client.call('/v1/ingest',{'items':[wire_record()]})
+        provider=self.provider()
+        delay=.8
+        real=provider.client.call
+        def slow(path,*args,**kwargs):
+            if path=='/v1/search':time.sleep(delay)
+            return real(path,*args,**kwargs)
+        provider.client.call=slow
+        start=time.monotonic()
+        first=provider.prefetch('PostgreSQL')
+        returned=time.monotonic()-start
+        self.assertEqual(self.prefetch_state(first),'pending')
+        # The initial call blocks at most prefetch_wait_seconds, never the search itself.
+        self.assertLess(returned,delay/2)
+        self.assertIn("personal_memory_search",first)  # the notice names the explicit fallback
+        packet=self.await_prefetch(provider,'PostgreSQL',state='packet')
+        self.assertIn("PostgreSQL",packet)
+
+    def test_prefetch_failed_state_never_masquerades_as_evidence(self):
+        self.client.call('/v1/ingest',{'items':[wire_record()]})
+        provider=self.provider()
+        self.await_prefetch(provider,'PostgreSQL',state='packet')
+        # The service going unreachable between turns makes the cached packet unverifiable.
+        def unhealthy(path,*args,**kwargs): raise ConnectionError("service offline")
+        provider.health_client.call=unhealthy
+        failed=provider.prefetch('PostgreSQL')
+        self.assertEqual(self.prefetch_state(failed),'failed')
+        self.assertIn("Memory freshness could not be verified",failed)
+        self.assertNotIn("Untrusted personal memory evidence",failed)
+
+    def test_prefetch_backend_search_failure_records_the_failed_notice(self):
+        provider=self.provider()
+        real=provider.client.call
+        def broken(path,*args,**kwargs):
+            if path=='/v1/search':raise ConnectionError("service offline")
+            return real(path,*args,**kwargs)
+        provider.client.call=broken
+        self.assertEqual(self.prefetch_state(provider.prefetch('PostgreSQL')),'pending')
+        # The background recall stores an explicit failure notice with guidance, never an
+        # empty success or fabricated evidence (unknown generation fails freshness matching,
+        # so callers keep receiving the pending guidance rather than stale proof).
+        entry=None
+        deadline=time.monotonic()+5
+        while time.monotonic()<deadline:
+            with provider.lock:
+                entry=provider.cache.get(('session-a','PostgreSQL'))
+            if entry is not None:break
+            time.sleep(.02)
+        self.assertIsNotNone(entry)
+        self.assertIsNone(entry["result"])
+        self.assertEqual(self.prefetch_state(entry["text"]),'failed')
+        self.assertIn("Personal memory retrieval failed",entry["text"])
+
     def test_prefetch_does_not_reinject_evidence_already_in_session(self):
         self.client.call('/v1/ingest',{'items':[wire_record()]})
         provider=self.provider()
-        self.await_prefetch(provider,'PostgreSQL',present=True)
+        self.await_prefetch(provider,'PostgreSQL',state='packet')
         # Duplicate suppression alone: the evidence is retained in the session,
         # so the cached backend result is reformatted to nothing.
-        self.assertEqual(self.await_prefetch(provider,'PostgreSQL',present=False),"")
+        self.assertEqual(self.await_prefetch(provider,'PostgreSQL',state='suppressed'),"")
 
     def test_pre_compress_rehydrates_previously_suppressed_evidence(self):
         self.client.call('/v1/ingest',{'items':[wire_record()]})
         provider=self.provider()
-        # Generous recall budget: this asserts evidence rehydrates, not that it does so within a
-        # fixed window; local-model inference (model-on pass) makes each background search slower.
-        wait=10
-        result=provider.prefetch('PostgreSQL')
-        deadline=time.monotonic()+wait
-        while time.monotonic()<deadline and "Untrusted personal" not in result:
-            time.sleep(.02);result=provider.prefetch('PostgreSQL')
-        self.assertIn("PostgreSQL",result)  # first recall injects the evidence
+        packet=self.await_prefetch(provider,'PostgreSQL',state='packet')
+        self.assertIn("PostgreSQL",packet)  # first recall injects the evidence
         # The backend response remains cached, but formatting is recomputed from live exposure.
-        result=provider.prefetch('PostgreSQL')
-        deadline=time.monotonic()+wait
-        while time.monotonic()<deadline and result:
-            time.sleep(.02);result=provider.prefetch('PostgreSQL')
-        self.assertEqual(result,"")  # still in context => suppressed, no empty envelope appended
+        self.assertEqual(self.await_prefetch(provider,'PostgreSQL',state='suppressed'),"")
         # Compression evicts the injected evidence from the live transcript; the epoch bump forces
         # the same cached backend result to rehydrate immediately, without manual invalidation.
         provider.on_pre_compress([{"role":"user","content":"recall PostgreSQL"}],require_checkpoint=True)
-        result=provider.prefetch('PostgreSQL')
-        deadline=time.monotonic()+wait
-        while time.monotonic()<deadline and "Untrusted personal" not in result:
-            time.sleep(.02);result=provider.prefetch('PostgreSQL')
-        self.assertIn("PostgreSQL",result)
+        packet=self.await_prefetch(provider,'PostgreSQL',state='packet')
+        self.assertIn("PostgreSQL",packet)
 
     def test_claim_fingerprint_change_reinjects_without_compression(self):
         provider=self.provider();sid=provider.session_id
@@ -380,12 +441,11 @@ class UpstreamContractTests(HTTPFixture):
             if path=='/v1/search':calls+=1
             return real(path,*args,**kwargs)
         provider.client.call=counted
-        provider.prefetch('PostgreSQL')
-        deadline=time.monotonic()+3
-        while time.monotonic()<deadline:
-            with provider.lock:
-                if ('session-a','PostgreSQL') not in provider.inflight:break
-            time.sleep(.02)
+        first=provider.prefetch('PostgreSQL')
+        # Inspect the first return, then synchronise with completion: the packet state proves
+        # the cached result landed and passed the generation check, unlike the old inflight drain.
+        self.assertIn(self.prefetch_state(first),('pending','packet'))
+        self.await_prefetch(provider,'PostgreSQL',state='packet')
         # A bare search resolves to balanced/8, which the fast/4 prefetch cannot cover, so it must
         # run a real retrieval instead of silently downgrading to the cached narrow one.
         result=json.loads(provider.handle_tool_call('personal_memory_search',{'query':'PostgreSQL'}))
@@ -402,12 +462,9 @@ class UpstreamContractTests(HTTPFixture):
             if path=='/v1/search':calls+=1
             return real(path,*args,**kwargs)
         provider.client.call=counted
-        provider.prefetch('PostgreSQL')
-        deadline=time.monotonic()+3
-        while time.monotonic()<deadline:
-            with provider.lock:
-                if ('session-a','PostgreSQL') not in provider.inflight:break
-            time.sleep(.02)
+        first=provider.prefetch('PostgreSQL')
+        self.assertIn(self.prefetch_state(first),('pending','packet'))
+        self.await_prefetch(provider,'PostgreSQL',state='packet')
         # An explicit search that asks for no more than the prefetch capability (fast/4) reuses it.
         result=json.loads(provider.handle_tool_call('personal_memory_search',
                                                     {'query':'PostgreSQL','depth':'fast','limit':4}))
@@ -427,12 +484,9 @@ class UpstreamContractTests(HTTPFixture):
             if path=='/v1/search':calls+=1
             return real(path,*args,**kwargs)
         provider.client.call=counted
-        provider.prefetch('shared-token')
-        deadline=time.monotonic()+3
-        while time.monotonic()<deadline:
-            with provider.lock:
-                if ('session-a','shared-token') not in provider.inflight:break
-            time.sleep(.02)
+        first=provider.prefetch('shared-token')
+        self.assertIn(self.prefetch_state(first),('pending','packet'))
+        self.await_prefetch(provider,'shared-token',state='packet')
         limited=json.loads(provider.handle_tool_call('personal_memory_search',
                            {'query':'shared-token','depth':'fast','limit':1}))
         self.assertEqual(len(limited['episodes']),1)
@@ -517,11 +571,7 @@ class UpstreamContractTests(HTTPFixture):
         self.assertTrue(provider.lineage.exposed('session-a'))  # lineage attributed
         self.assertEqual(provider.exposure.get('session-a',{}).get('rows',{}),{})  # nothing marked injected
         # The next automatic recall still injects the evidence (it was never suppressed).
-        result=provider.prefetch('PostgreSQL')
-        deadline=time.monotonic()+3
-        while time.monotonic()<deadline and "Untrusted personal" not in result:
-            time.sleep(.02);result=provider.prefetch('PostgreSQL')
-        self.assertIn("PostgreSQL",result)
+        self.assertIn("PostgreSQL",self.await_prefetch(provider,'PostgreSQL',state='packet'))
 
     def test_session_switch_is_scoped_to_the_switching_sessions(self):
         provider=self.provider()  # session-a
@@ -552,29 +602,24 @@ class UpstreamContractTests(HTTPFixture):
 
     def test_external_forget_invalidates_cached_recall(self):
         rid=self.client.call("/v1/ingest", {"items":[wire_record()]})["records"][0]["id"]
-        provider=self.provider();provider.prefetch("PostgreSQL")
-        deadline=time.monotonic()+3
-        while time.monotonic()<deadline:
-            result=provider.prefetch("PostgreSQL")
-            if "Untrusted personal" in result:break
-            time.sleep(.02)
-        self.assertIn("PostgreSQL",result)
+        provider=self.provider()
+        self.await_prefetch(provider,"PostgreSQL",state='packet')
         self.client.call("/v1/forget",{"record_id":rid})
         self.assertNotIn("PostgreSQL",provider.prefetch("PostgreSQL"))
 
     def test_prefetch_eventually_returns_evidence_without_network_block(self):
+        # Real-model latency measurement, kept separate from the state-behaviour assertions
+        # above: the bounded initial wait holds even on this host's model path, and evidence
+        # still arrives. No equality on timing is asserted; cold caches legitimately vary.
         self.client.call("/v1/ingest", {"items": [wire_record()]})
         provider = self.provider()
         start = time.monotonic()
-        provider.prefetch("PostgreSQL")
-        self.assertLess(time.monotonic() - start, .3)
-        deadline = time.monotonic() + 3
-        result = ""
-        while time.monotonic() < deadline:
-            result = provider.prefetch("PostgreSQL")
-            if "Untrusted personal" in result: break
-            time.sleep(.02)
-        self.assertIn("PostgreSQL", result)
+        first = provider.prefetch("PostgreSQL")
+        returned = time.monotonic() - start
+        # A warm backend may finish inside the bounded wait; a cold one returns the notice.
+        self.assertIn(self.prefetch_state(first), ("pending", "packet"))
+        self.assertLess(returned, 1.0)  # prefetch_wait_ms caps the block at 200ms + overhead
+        self.assertIn("PostgreSQL", self.await_prefetch(provider, "PostgreSQL", state="packet"))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Correctness tests use deterministic vectors, not a semantic quality benchmark."""
 import json
+import os
 import tempfile
 import threading
 import time
@@ -16,6 +17,17 @@ from personal_memory.store import Store
 def record(i,text="vehicle repair",source="whatsapp",when="2024-01-01T12:00:00Z",participants=None):
     return {"source":source,"source_id":str(i),"text":text,"occurred_at":when,
             "metadata":{"participants":participants or []}}
+
+
+def _env_restore(case, key, previous):
+    """Return one environment variable to its exact prior state (value or absence) after the
+    test, so kill-switch settings never leak between model-loading behaviours in one process."""
+    def restore():
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+    case.addCleanup(restore)
 
 
 class Fixture(unittest.TestCase):
@@ -128,9 +140,9 @@ class RetrievalTests(Fixture):
             if saved is not None: os.environ["PERSONAL_MEMORY_DISABLE_RERANK"]=saved
 
     def test_rerank_env_killswitch_forces_it_off(self):
-        import os
+        saved=os.environ.get("PERSONAL_MEMORY_DISABLE_RERANK")
+        _env_restore(self,"PERSONAL_MEMORY_DISABLE_RERANK",saved)
         os.environ["PERSONAL_MEMORY_DISABLE_RERANK"]="1"
-        self.addCleanup(os.environ.pop,"PERSONAL_MEMORY_DISABLE_RERANK",None)
         h=Hybrid(self.store,start=False); self.addCleanup(h.close)
         self.assertFalse(h._rerank_enabled)  # operator/test override without any config change
 
@@ -148,9 +160,9 @@ class RetrievalTests(Fixture):
             if saved is not None: os.environ["PERSONAL_MEMORY_DISABLE_SEMANTIC"]=saved
 
     def test_semantic_env_killswitch_forces_it_off(self):
-        import os
+        saved=os.environ.get("PERSONAL_MEMORY_DISABLE_SEMANTIC")
+        _env_restore(self,"PERSONAL_MEMORY_DISABLE_SEMANTIC",saved)
         os.environ["PERSONAL_MEMORY_DISABLE_SEMANTIC"]="1"
-        self.addCleanup(os.environ.pop,"PERSONAL_MEMORY_DISABLE_SEMANTIC",None)
         h=Hybrid(self.store,start=False); self.addCleanup(h.close)
         self.assertFalse(h._semantic_enabled)  # operator/test override without any config change
         self.assertNotIn("semantic",h.status()["capabilities"])
