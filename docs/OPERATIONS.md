@@ -42,14 +42,18 @@ Keep the database and outbox on reliable storage with free-space monitoring.
 
 Service startup is transactional for resource ownership: operator configuration is validated
 before the indexing lease or any worker exists, and if a later initialization stage fails, the
-already-created resources are closed in reverse order through the normal shutdown path (so
-indexing ownership stays held until its writers actually stop). The startup error itself is
-always preserved; after a failed start you can correct the configuration and restart in the
-same process against the same data directory. Shutdown is likewise retryable: a resource whose
-close did not finish (a writer outliving the join budget, a failing closer) stays tracked while
-the remaining resources still close, so a repeated close - or the next startup - completes the
-cleanup instead of silently dropping it. An unfinished lifespan shutdown is reported as failed
-rather than claiming a clean stop.
+already-created resources are closed in reverse order through the normal shutdown path. The
+startup error itself is always preserved. A new startup is refused - without overwriting any
+handles - while a prior shutdown is still holding ownership, so two writers never share a data
+directory. Shutdown is likewise dependency-aware and retryable: it releases the service, then
+the runtime, then the lease, and short-circuits on the first close that has not finished. Any
+owned work counts toward that drain - indexing workers, the source and workflow workers, and
+the lazy semantic initializer alike - so a resource whose close did not finish (a writer or
+initializer outliving the join budget, a failing closer) stays tracked while the remaining
+resources still close. A successful close therefore guarantees that no owned request, initializer
+or worker can subsequently touch a released resource; an unfinished shutdown is reported as
+failed rather than claiming a clean stop, and a later close retries the retained resources
+instead of silently dropping them.
 
 The production server binds loopback, uses one Uvicorn process, bounds HTTP concurrency
 and request bodies, rejects browser-origin requests and disables access logs. The

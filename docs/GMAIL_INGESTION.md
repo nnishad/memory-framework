@@ -3,7 +3,10 @@
 The Gmail adapter imports accessible historical messages and polls mailbox
 history for new/changed messages. The memory service owns the worker: no agent
 turn, external cron job, or per-fetch LLM call is required. Restarting the service
-resumes active connections from durable checkpoints.
+resumes active connections from durable checkpoints. A new-mail signal is held
+until every required feed commits a complete, caught-up page that advances its
+checkpoint, so a partial or failed page never consumes the signal or leaves the
+mailbox silently behind.
 
 ## Setup on the Hermes host
 

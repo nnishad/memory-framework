@@ -172,6 +172,27 @@ arriving mid-sync must still cause a subsequent pass. Event-only sources retain
 payloads and declare replay limitations. Periodic reconciliation repairs missed
 signals where the upstream API permits it.
 
+Catch-up is a single normalized outcome the worker derives from the committed
+receipt, not from the paging flag alone:
+
+```text
+caught_up = page_committed AND checkpoint_complete AND NOT page.more
+```
+
+`complete` decides whether the checkpoint may advance; `more` decides whether a
+completed checkpoint still has continuation after it. An incomplete page (a
+`complete` of false) never counts as caught up and never advances the checkpoint,
+regardless of `more`; a legacy page that omits `more` defaults it to false but
+still requires `complete` to be true. A durable signal is acknowledged only when
+every required incremental feed (each stream and partition) reports `caught_up`
+in the same pass, so a converged feed can never stand in for a still-incomplete
+one. That identical outcome drives scheduling: a caught-up feed waits the normal
+poll interval, a completed-but-paging feed keeps converging promptly, and an
+incomplete/no-progress feed is held with a bounded backoff so a retained signal
+never turns into a tight polling loop. Because signals and checkpoints are durable,
+a replacement process resumes the same way and only acknowledges after a complete
+caught-up page.
+
 Pausing prevents new jobs; bounded in-flight work may finish unless cancelled.
 Disconnect cancels/fences work and stops credential use; deleting stored memories
 is a distinct operation. Reset invalidates all old worker epochs and must not

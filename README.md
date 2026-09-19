@@ -28,7 +28,9 @@ accuracy of an untested model, personal archive or deployment.
 
 For Gmail OAuth setup, continuous ingestion, and the bounded Windows live test,
 see [Gmail ingestion](docs/GMAIL_INGESTION.md). The running memory service owns the
-sync worker; historical capture and new-mail polling have separate checkpoints.
+sync worker; historical capture and new-mail polling have separate checkpoints. A
+change signal is acknowledged only after every required feed commits a complete,
+caught-up page, so an interrupted or partial page never drops the request.
 
 Use Python 3.11+ on Linux or macOS with SQLite FTS5 and the pinned Hermes release `v2026.9.14`.
 The service uses POSIX file locking; native Windows service deployment is not supported by

@@ -67,7 +67,12 @@ with tempfile.TemporaryDirectory() as tmp:
         # not enough: it stays engine-queue-focused by design.
         deadline=time.monotonic()+240
         while True:
-            state=client.call('/v1/status',{})
+            try:
+                state=client.call('/v1/status',{})
+            except Exception:
+                # A slow status sample during the one-time model priming (for example an
+                # HF cache fill) is wait-loop noise, not a gate failure; convergence is asserted.
+                state={}
             if (state.get('semantic',{}).get('ready') and
                     (not state.get('rerank',{}).get('enabled') or state['rerank'].get('loaded'))):break
             if process.poll() is not None or time.monotonic()>deadline:raise RuntimeError('retrieval warm-up did not converge')

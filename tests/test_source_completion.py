@@ -64,6 +64,49 @@ class PageAdapter(FixtureAdapter):
         return page
 
 
+class PartitionAdapter(FixtureAdapter):
+    """A non-Gmail adapter with one required incremental stream split across partitions.
+
+    Each partition returns an independently scripted page, so a caught-up partition can
+    never stand in for an incomplete one: the whole connection stays pending until every
+    required feed commits a complete caught-up page. This also proves a non-Gmail adapter
+    shares the one normalized catch-up outcome.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.pages_by_partition = {}
+        self.reads = {}
+
+    def spec(self):
+        value = super().spec()
+        value["adapter_id"] = "fixture.partitioned"
+        return value
+
+    def discover(self, context):
+        return [stream_spec("messages", modes=["incremental"], version_order="integer",
+                            partitions=[{"id": "a"}, {"id": "b"}])]
+
+    def add(self, partition, ops=(), complete=True, more=False, cursor=None):
+        self.pages_by_partition.setdefault(partition, []).append(
+            {"ops": list(ops), "complete": complete, "more": more,
+             "cursor": cursor or {"done": True}})
+
+    def read_page(self, context, state):
+        partition = context["partition"]
+        steps = self.pages_by_partition[partition]
+        index = self.reads.get(partition, 0)
+        self.reads[partition] = index + 1
+        step = steps[min(index, len(steps) - 1)]
+        operations = [source_operation("upsert", source_id, source_version=index + 1,
+                                       records=[note_record(source_id, source=context["source"])])
+                      for source_id in step["ops"]]
+        return source_page(page_id="pg-%s-%d" % (partition, index), operations=operations,
+                           next_state=read_state(cursor=step["cursor"], mode=state["mode"],
+                                                 state_version=state["state_version"]),
+                           complete=step["complete"], more=step["more"])
+
+
 class CompletionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -178,6 +221,55 @@ class CompletionTests(unittest.TestCase):
         self.force_due(runtime, cid)
         runtime.tick()   # a later valid completed page recovers and acknowledges
         self.assertEqual(0, self.pending(runtime, cid))
+
+    def test_complete_page_omitting_more_is_caught_up(self):
+        # A legacy page that omits `more` and completes the checkpoint IS caught up.
+        feed = PageAdapter()
+        feed.add(ops=["msg-1"], complete=True, cursor={"done": True, "head": 1}, legacy=True)
+        runtime, cid = self.runtime(feed)
+        self.signal(runtime, cid, "push-1")
+        runtime.tick()
+        self.assertEqual(0, self.pending(runtime, cid))
+        self.assertIsNotNone(self.cursor(runtime, cid))
+
+    def test_one_incomplete_partition_holds_the_whole_connection(self):
+        feed = PartitionAdapter()
+        feed.add("a", ops=["a-1"], complete=True, more=False)    # caught up
+        feed.add("b", ops=["b-1"], complete=False, more=False)   # checkpoint not advanced
+        runtime = SourceRuntime(self.store, self.root, config={"enabled": False}, adapters=[feed])
+        self.addCleanup(runtime.close)
+        connection = runtime.sync.configure(adapter_id="fixture.partitioned", source="part-src",
+                                            scope={"poll_seconds": 300}, retention="archive")
+        cid = connection["connection_id"]
+        self.signal(runtime, cid, "push-1")
+        runtime.tick()
+        # A converged partition can never acknowledge for a still-incomplete one.
+        self.assertEqual(1, self.pending(runtime, cid))
+
+    def test_retained_signal_survives_a_runtime_restart(self):
+        # Cross-boundary durability: an unacknowledged signal and an unadvanced
+        # checkpoint are durable state, so a replacement process - not a lost in-memory
+        # pass - finishes catch-up and only then acknowledges.
+        first_feed = PageAdapter()
+        first_feed.add(ops=["msg-1"], complete=False, more=False, cursor={"page": 1})
+        runtime, cid = self.runtime(first_feed)
+        self.signal(runtime, cid, "push-1")
+        runtime.tick()
+        self.assertEqual(1, self.pending(runtime, cid))
+        self.assertIsNone(self.cursor(runtime, cid))
+        self.assertIsNotNone(runtime.sync.head("gmail-acct1", "msg-1"))  # item applied, checkpoint held
+        runtime.close()
+
+        # A fresh runtime over the same durable store resumes from the retained signal.
+        second_feed = PageAdapter()
+        second_feed.add(ops=[], complete=True, more=False, cursor={"done": True, "head": 1},
+                        page_id="resumed")
+        resumed = SourceRuntime(self.store, self.root, config={"enabled": False}, adapter=second_feed)
+        self.addCleanup(resumed.close)
+        self.force_due(resumed, cid)  # the durable backoff window has elapsed
+        resumed.tick()
+        self.assertEqual(0, self.pending(resumed, cid))          # only now is the signal consumed
+        self.assertIsNotNone(self.cursor(resumed, cid))          # checkpoint advanced durably
 
 
 if __name__ == "__main__":
