@@ -85,6 +85,13 @@ class Hybrid:
             bool(self._semantic_cfg.get("enabled", True)) and not _semantic_disabled_by_env())
         self._semantic_failed = False
         self._semantic_lock = threading.Lock()
+        # Retrieval lifecycle: an in-progress semantic construction is owned work,
+        # not just a warm-up thread reference. A model load that begins before close
+        # must finish (or be discarded) before the indexing lease is released, so a
+        # slow initializer can never resume as a writer after ownership has moved.
+        self._lifecycle = threading.Condition()
+        self._state = "running"  # running -> closing -> closed
+        self._initializers = 0
         # The external Hindsight engine stays opt-in: it needs an operator URL/bank, so it is
         # constructed eagerly only when explicitly configured.
         hindsight_cfg = self.config.get("hindsight", {})
@@ -175,6 +182,11 @@ class Hybrid:
         Any import/model failure is recorded once and made permanent (never retried per query) so
         retrieval degrades to the keyword+Hindsight channels and startup never blocks on the
         embedding model.
+
+        Initialization is owned lifecycle work: it is registered under the lifecycle lock
+        before the constructor runs and only publishes an engine and starts an indexing
+        worker while the lifecycle is still running. A model load that finishes during
+        shutdown is discarded, so it cannot resume as a writer after the lease has moved.
         """
         if self.semantic is not None or not self._semantic_enabled or self._semantic_failed:
             return self.semantic
@@ -183,25 +195,59 @@ class Hybrid:
         with self._semantic_lock:
             if self.semantic is not None or not self._semantic_enabled or self._semantic_failed:
                 return self.semantic
+            with self._lifecycle:
+                # Reject a new model load once closing has begun.
+                if self._state != "running":
+                    return None
+                self._initializers += 1
             try:
-                from .semantic import SemanticIndex
-                engine = SemanticIndex(self.store, self._semantic_cfg)
-            except Exception as error:
-                self.semantic = None
-                self._semantic_failed = True
-                self.errors["semantic"] = type(error).__name__ + ": semantic index unavailable; using keyword/hindsight"
-                return None
-            self.semantic = engine
-            if self._start and self.owns_indexing:
-                # Lazy initialization may only start background indexing under the
-                # ownership lease acquired at startup.
-                self._start_index_thread(engine)
-            return self.semantic
+                try:
+                    from .semantic import SemanticIndex
+                    engine = SemanticIndex(self.store, self._semantic_cfg)
+                except Exception as error:
+                    self.semantic = None
+                    self._semantic_failed = True
+                    self.errors["semantic"] = type(error).__name__ + ": semantic index unavailable; using keyword/hindsight"
+                    return None
+                # Recheck ownership before publishing a writer: a construction that landed
+                # during shutdown must be discarded, never resumed as an indexing worker.
+                with self._lifecycle:
+                    if self._state != "running":
+                        return None
+                    self.semantic = engine
+                    if self._start and self.owns_indexing:
+                        # Lazy initialization may only start background indexing under the
+                        # ownership lease acquired at startup.
+                        self._start_index_thread(self.semantic)
+                    return self.semantic
+            finally:
+                with self._lifecycle:
+                    self._initializers -= 1
+                    self._lifecycle.notify_all()
 
     def close(self, join_budget=125.0, warmup_grace=2.0):
+        deadline = time.monotonic() + join_budget
+        # Enter the closing state before stopping anything: once closing is set, no
+        # initializer may publish a new engine or register a new worker, so the writer
+        # set close joins below is stable. A close that already finished is idempotent.
+        with self._lifecycle:
+            if self._state == "closed":
+                return
+            self._state = "closing"
         self.stop.set()
         self.pool.shutdown(wait=True, cancel_futures=True)
-        deadline = time.monotonic() + join_budget
+        # Wait for in-progress initializers to drain before deciding the writer set is
+        # complete: a construction that is mid-model-load still performs its durable
+        # activation writes, so the lease must stay held until it finishes (or aborts).
+        # The condition releases the lifecycle lock while waiting, so an initializer can
+        # complete its publish/abort recheck.
+        with self._lifecycle:
+            while self._initializers:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._lifecycle.wait(timeout=remaining)
+            initializers_pending = bool(self._initializers)
         # A warm-up worker aborts at its next step boundary once stop is set. An
         # in-flight third-party model load cannot be interrupted, so it gets a
         # bounded grace: best-effort priming never holds up shutdown, and the
@@ -212,17 +258,24 @@ class Hybrid:
                 LOG.warning("Warm-up still loading at close; it aborts at its next step boundary")
         for thread in self.threads:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        # Ownership releases only after every indexing worker has actually stopped;
-        # a still-live writer must never share the journal with a new owner. The
-        # failure is reported so the caller knows shutdown is incomplete, and the
-        # lease stays held: a later close() retries once the writer exits.
+        # Ownership releases only after every owned writer and initializer has actually
+        # stopped; a still-live worker or a constructor that outlived the budget must
+        # never share the journal with a new owner. The failure is reported so the caller
+        # knows shutdown is incomplete, and the lease stays held: a later close() retries.
+        writers_pending = any(thread.is_alive() for thread in self.threads)
         if self.index_lease is not None:
-            if any(thread.is_alive() for thread in self.threads):
-                raise RuntimeError("Indexing workers outlived the shutdown budget; ownership retained")
+            if initializers_pending or writers_pending:
+                raise RuntimeError("Indexing initialization or workers outlived the shutdown budget; ownership retained")
             self.index_lease.close()
             self.index_lease = None
         if self._warmup is not None and not self._warmup.is_alive():
             self._warmup = None
+        with self._lifecycle:
+            # Only a fully drained lifecycle reaches the closed state; a retained lease
+            # leaves it closing so a later close() retries rather than silently no-ops.
+            if not initializers_pending and not writers_pending:
+                self._state = "closed"
+                self._lifecycle.notify_all()
 
     def start_warmup(self):
         """Prime the retrieval models off the request path in an owned thread.
@@ -231,6 +284,11 @@ class Hybrid:
         it to abort at a step boundary, so a reported-clean shutdown never leaves
         a memory-* thread running against the closed service.
         """
+        with self._lifecycle:
+            # A closed or closing service must not reopen resources: warm-up is only
+            # meaningful on a running lifecycle.
+            if self._state != "running":
+                return None
         thread = self._warmup
         if thread is not None and thread.is_alive():
             return thread
