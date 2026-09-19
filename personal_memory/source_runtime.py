@@ -261,12 +261,22 @@ class SourceRuntime:
                             self._schedule(cid,schedule_key,max(30,result.get('retry_after') or 60),result.get('reason','Source sync failed'))
                         else:
                             if role=='incremental':
-                                # Completion is the adapter contract's continuation
-                                # declaration, not a Gmail-shaped cursor field.
-                                caught=not bool(result.get('more',False))
+                                # Catch-up is the worker's normalized outcome (committed
+                                # checkpoint complete AND no continuation), never the bare
+                                # paging flag: an incomplete page must not acknowledge a
+                                # signal or advance the schedule as if it had converged.
+                                caught=bool(result.get('caught_up',False))
                                 covered[(stream,partition)]=caught
-                                self._schedule(cid,schedule_key,
-                                               connection['scope'].get('poll_seconds',300) if caught else 0)
+                                if caught:
+                                    self._schedule(cid,schedule_key,connection['scope'].get('poll_seconds',300))
+                                elif result.get('page_complete') and result.get('more'):
+                                    # A completed checkpoint that still declares continuation:
+                                    # real progress, so keep converging promptly.
+                                    self._schedule(cid,schedule_key,0)
+                                else:
+                                    # The checkpoint did not advance: hold the retained signal
+                                    # with a bounded, backoff-flagged retry so it cannot spin.
+                                    self._schedule(cid,schedule_key,30,'Source page incomplete; checkpoint not advanced')
                             else:
                                 cursor=self.sync.stream_state(cid,stream,partition=partition,role=role)['cursor'] or {}
                                 if role=='reconcile' and cursor.get('done'):

@@ -788,11 +788,17 @@ class SyncWorker:
                                      lease["cursor"], lease["scan"],lease['epoch'],lease['generation'], page["page_id"]])[:32]
             result = self.sync.commit_page(lease, op_id=op_id, page=page, declarations=declarations)
             terminal = bool(page['complete']) and not page['operations']
+            # Catch-up is defined once, here: the checkpoint advanced for this page
+            # (the committed ``complete`` receipt, not the paging flag) and the adapter
+            # declares no continuation. Both signal acknowledgment and feed scheduling
+            # consume this single normalized outcome so they can never disagree.
+            caught_up = bool(result["page_complete"]) and not bool(page.get("more", False))
             return {"status": "complete" if terminal else "committed",
                     "more": bool(page.get("more", False)),
                     "applied": result["applied"], "suppressed": result["suppressed"],
                     "history_only": result["history_only"], "skipped": result["skipped"],
-                    "replayed": result["replayed"], "page_complete": result["page_complete"]}
+                    "replayed": result["replayed"], "page_complete": result["page_complete"],
+                    "caught_up": caught_up}
         except AdapterError as error:
             if error.kind == "auth":
                 self.sync._set_state(connection_id, "needs_auth")
