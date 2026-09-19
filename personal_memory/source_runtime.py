@@ -40,7 +40,13 @@ class SourceRuntime:
 
     def close(self):
         self.stop.set()
-        if self.thread:self.thread.join(timeout=25)
+        if self.thread:
+            self.thread.join(timeout=25)
+            # A source feed still running past the join budget means its durable
+            # signal/checkpoint work is unfinished: report the incomplete close so the
+            # owning service retains control and retries instead of losing a writer.
+            if self.thread.is_alive():
+                raise RuntimeError("Source worker outlived the shutdown budget; ownership retained")
 
     def connect_gmail(self, *, credentials, after=None, retention='archive', poll_seconds=300):
         if not isinstance(credentials,dict) or set(credentials)-{'client_id','client_secret','refresh_token','scope'}:

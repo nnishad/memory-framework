@@ -150,51 +150,61 @@ class LifespanShutdownTests(unittest.TestCase):
             return replies
         return asyncio.run(go())
 
-    def test_failed_startup_releases_lease_and_permits_a_clean_startup(self):
+    def test_failed_startup_retains_ownership_until_cleanup_completes(self):
         FakeHindsightRuntime.closer = FlakyClose()
         app = self.app()
         with mock.patch("personal_memory.asgi.MemoryService",
                         side_effect=StartupError("injected stage failure")), \
              mock.patch("personal_memory.hindsight_runtime.Runtime", FakeHindsightRuntime):
             replies = self.drive(app, [{"type": "lifespan.startup"}])
-        # The hindsight close raised first, yet the failure was reported and the
-        # lease was still released: startup.failed, not a raw crash.
+        # The managed runtime refused to close, so dependency-aware cleanup keeps the
+        # process lease owned rather than handing it to a second writer: startup.failed,
+        # not a raw crash, and not a false release of a still-dependent resource.
         self.assertEqual("lifespan.startup.failed", replies[0]["type"])
-        probe = ProcessLease(self.data / "service.lock")  # raises if the lease leaked
-        probe.close()
-        # The same application instance can start cleanly later in the process.
+        self.assertEqual(1, FakeHindsightRuntime.closer.calls)
+        with self.assertRaises(RuntimeError):
+            ProcessLease(self.data / "service.lock")  # lease still owned
+        # Retrying startup first drains the retained runtime, then claims ownership.
         replies = self.drive(app, [{"type": "lifespan.startup"}])
         self.assertEqual("lifespan.startup.complete", replies[0]["type"])
         replies = self.drive(app, [{"type": "lifespan.shutdown"}])
         self.assertEqual("lifespan.shutdown.complete", replies[0]["type"])
-        # The retained flaky resource was retried at the next startup, not
-        # dropped: one failing close plus the successful retry.
+        # The retained flaky resource was retried at the next startup, not dropped:
+        # one failing close plus the successful retry during the cleanup-before-restart.
         self.assertEqual(2, FakeHindsightRuntime.closer.calls)
+        probe = ProcessLease(self.data / "service.lock")
+        probe.close()
 
-    def test_shutdown_continues_past_a_failing_service_close(self):
+    def test_shutdown_retains_ownership_past_a_failing_service_close(self):
         app = self.app()
         self.assertEqual("lifespan.startup.complete",
                          self.drive(app, [{"type": "lifespan.startup"}])[0]["type"])
+        # Release the real retrieval backend's indexing lease before substituting the
+        # service close: this test drives only the ASGI ownership boundary.
+        app.service.close()
         attempts = []
-        real_close = app.service.close
 
         def flaky_service_close():
             if not attempts:
                 attempts.append("failed")
                 raise RuntimeError("injected incomplete shutdown")
-            real_close()
         app.service.close = flaky_service_close
-        hindsight = FlakyClose()
+        hindsight = CountingClose()
         app.hindsight_runtime = hindsight
         replies = self.drive(app, [{"type": "lifespan.shutdown"}])
         self.assertEqual("lifespan.shutdown.failed", replies[0]["type"])
-        self.assertEqual(1, hindsight.calls, "shutdown must continue past the service failure")
-        # The lease was released even though the service close failed.
-        probe = ProcessLease(self.data / "service.lock")
-        probe.close()
-        # Retry: the retained service closes and the shutdown completes.
+        # Dependency-aware: the service could not close, so its runtime prerequisite
+        # is never touched and the process lease stays owned by the live service.
+        self.assertEqual(0, hindsight.calls, "shutdown must not release a dependent's owner")
+        self.assertIsNotNone(app.lease)
+        with self.assertRaises(RuntimeError):
+            ProcessLease(self.data / "service.lock")
+        # Retry: the retained service, then the runtime and lease drain in order.
         replies = self.drive(app, [{"type": "lifespan.shutdown"}])
         self.assertEqual("lifespan.shutdown.complete", replies[0]["type"])
+        self.assertEqual(1, hindsight.calls)
+        probe = ProcessLease(self.data / "service.lock")
+        probe.close()
 
 
 if __name__ == "__main__":

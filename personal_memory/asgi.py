@@ -47,7 +47,9 @@ class ProcessLease:
 class Application:
     def __init__(self,settings):
         self.settings=settings;self.service=None;self.lease=None;self.hindsight_runtime=None
-        self.executor=ThreadPoolExecutor(max_workers=8,thread_name_prefix="memory-http")
+        # The HTTP executor is owned by a running lifecycle: it is created at startup
+        # and drained at shutdown, so a restart never submits work to a shut-down pool.
+        self.executor=None;self.accepting=False
         self.slots=asyncio.Semaphore(16)
 
     def _release(self,name):
@@ -64,29 +66,42 @@ class Application:
         setattr(self,name,None)
         return True
 
-    def _release_all(self):
-        # Reverse construction order; every owned resource gets its attempt even
-        # when an earlier one fails.
-        released=True
+    def _teardown(self):
+        # One dependency-aware cleanup routine shared by normal shutdown, failed
+        # startup and cleanup-before-restart. Reverse construction order, but stop at
+        # the first resource that will not close: a service that still owns a live
+        # writer or an initialization must keep its Hindsight runtime and process
+        # lease held, because releasing the lease while a dependent is still running
+        # would hand ownership to a second process. Returns True only when every
+        # owned resource has actually been released.
         for name in ("service","hindsight_runtime","lease"):
-            released=self._release(name) and released
-        return released
+            if not self._release(name):
+                return False
+        return True
 
     async def __call__(self,scope,receive,send):
         if scope["type"]=="lifespan":
             while True:
                 message=await receive()
                 if message["type"]=="lifespan.startup":
+                    # A prior failed startup or unfinished shutdown may still own a
+                    # resource. Retry that cleanup first; if ownership has not fully
+                    # drained, refuse to claim it a second time rather than overwriting
+                    # the retained handles with replacements that would double-open them.
+                    if not self._teardown():
+                        await send({"type":"lifespan.startup.failed","message":"Prior shutdown is still holding ownership; not starting a second owner"})
+                        return
                     try:
-                        # A prior failed startup may have retained a resource whose
-                        # close failed: retry that cleanup before claiming ownership.
-                        self._release_all()
                         self.lease=ProcessLease(Path(self.settings["data_dir"])/"service.lock")
                         from .hindsight_runtime import Runtime
                         self.hindsight_runtime=Runtime(self.settings).start()
                         self.service=MemoryService(self.settings["data_dir"],self.settings["token"],
                             retrieval_config=self.settings.get("retrieval",{}),backend=self.settings.get("backend"),
                             principals=self.settings.get("principals",[]),extension_schemas=self.settings.get("extension_schemas",{}),intelligence_config=self.settings.get("intelligence",{}),source_config=self.settings.get('sources',{}))
+                        # The HTTP executor exists only for a running lifecycle; create
+                        # it once ownership is claimed and begin accepting requests.
+                        self.executor=ThreadPoolExecutor(max_workers=8,thread_name_prefix="memory-http")
+                        self.accepting=True
                         # Prime the lazy retrieval models off the request path so the first Hermes
                         # turn after a restart is fast instead of paying the ~7.7s cold-start. The
                         # retrieval backend owns the worker: readiness must not block on warm-up,
@@ -99,20 +114,27 @@ class Application:
                                 threading.Thread(target=warm,daemon=True,name="memory-warmup").start()
                         await send({"type":"lifespan.startup.complete"})
                     except Exception as error:
-                        # Cleanup attempts every owned resource and never masks the
-                        # startup exception, which is the actual diagnosis.
-                        self._release_all()
+                        # Cleanup stops at the first dependent that will not close and
+                        # keeps its prerequisites owned; it never masks the startup
+                        # exception, which is the actual diagnosis.
+                        if not self._teardown():
+                            LOG.warning("Startup cleanup incomplete; ownership retained for retry")
                         await send({"type":"lifespan.startup.failed","message":type(error).__name__+": inspect configuration/dependencies"})
                         return
                 elif message["type"]=="lifespan.shutdown":
-                    self._release("service")
-                    try:
-                        self.executor.shutdown(wait=True,cancel_futures=True)
-                    except Exception as error:
-                        LOG.warning("HTTP executor shutdown failed: %s",error)
-                    released=self._release("hindsight_runtime")
-                    released=self._release("lease") and released
-                    if released:
+                    # Stop accepting new requests and drain already-accepted handlers
+                    # before any service resource is closed, so an in-flight handler can
+                    # never call a service that has already been torn down.
+                    self.accepting=False
+                    if self.executor is not None:
+                        try:
+                            self.executor.shutdown(wait=True,cancel_futures=True)
+                        except Exception as error:
+                            LOG.warning("HTTP executor shutdown failed: %s",error)
+                        self.executor=None
+                    # Release in dependency order; a dependent that stays owned keeps
+                    # every prerequisite held and reports the shutdown as incomplete.
+                    if self._teardown():
                         await send({"type":"lifespan.shutdown.complete"})
                     else:
                         # Ownership may still be held by an unfinished close; say so
@@ -137,8 +159,10 @@ class Application:
             headers[key]=value
         inbound=sanitize_trace(headers.get(b"x-personal-memory-trace",b""))
         if inbound:trace=inbound
-        if not self.service:
-            await respond(503,{"error":"Service starting"});return
+        if not self.accepting or self.service is None:
+            # Reject before dispatch: a shutting-down or not-yet-started app must not
+            # submit work to an executor it is about to drain or has already drained.
+            await respond(503,{"error":"Service starting or stopping"});return
         try:principal=self.service.authenticate(headers.get(b"authorization",b"").decode())
         except (AccessDenied,UnicodeError):await respond(401,{"error":"Unauthorized"});return
         if b"origin" in headers:

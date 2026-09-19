@@ -430,7 +430,13 @@ class Workflows:
 
     def close(self):
         self.stop.set()
-        if self.thread:self.thread.join(timeout=self.timeout+5)
+        if self.thread:
+            self.thread.join(timeout=self.timeout+5)
+            # A worker still running after the bounded join means shutdown is
+            # incomplete: report it truthfully so ownership is retained and a later
+            # close retries, rather than abandoning a live adapter subprocess.
+            if self.thread.is_alive():
+                raise RuntimeError("Workflow worker outlived the shutdown budget; ownership retained")
 
     def status(self):
         with self.store.connect() as db:
