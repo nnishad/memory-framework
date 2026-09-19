@@ -247,6 +247,7 @@ class SemanticIndex:
         self.key = self.embedder.key
         self.lock, self.sync_lock = threading.RLock(), threading.Lock()
         self.index, self.rows, self.vectors = None, {}, {}
+        self._index_unhealthy = False
         self.last_error = None
         self.dimension = None
         self.minimum_similarity=config.get("minimum_similarity")
@@ -342,18 +343,41 @@ class SemanticIndex:
         vector /= np.linalg.norm(vector)
         if self.dimension is not None and len(vector)!=self.dimension:raise ValueError("Embedding dimension changed; select a new model revision")
         self.dimension=len(vector)
+        label = row["id"]
+        bookkeeping = (row["record_id"], row["start"], row["end"])
         with self.lock:
-            self.rows[row["id"]] = (row["record_id"], row["start"], row["end"])
             if self.hnsw:
-                if self.index is None:
-                    self.index = self.hnsw.Index(space="cosine", dim=len(vector))
-                    self.index.init_index(max_elements=1024, ef_construction=160, M=24, random_seed=17)
-                    self.index.set_num_threads(2)
-                if self.index.get_current_count() >= self.index.get_max_elements():
-                    self.index.resize_index(self.index.get_max_elements()*2)
-                self.index.add_items(vector.reshape(1,-1), [row["id"]])
+                self._insert_accelerator(label, vector)
             else:
-                self.vectors[row["id"]] = vector
+                self.vectors[label] = vector
+            # In-memory bookkeeping is published only after the backend holds the
+            # item, so membership in the row map is trustworthy proof of
+            # publication; a failed insertion leaves nothing half-published.
+            self.rows[label] = bookkeeping
+
+    def _insert_accelerator(self, label, vector):
+        """Insert one vector into the running accelerator, under the index lock.
+
+        A freshly built accelerator is adopted only after initialization and
+        thread configuration succeed, so a broken object is never published.
+        Any resize or insertion error is treated as ambiguous - the backend may
+        mutate before it throws - so the running accelerator is marked
+        unhealthy and the caller leaves the record genuinely unpublished and
+        retryable; the next publication rebuilds it from durable chunks rather
+        than inserting into a suspect object.
+        """
+        if self.index is None:
+            index = self.hnsw.Index(space="cosine", dim=len(vector))
+            index.init_index(max_elements=1024, ef_construction=160, M=24, random_seed=17)
+            index.set_num_threads(2)
+            self.index = index
+        try:
+            if self.index.get_current_count() >= self.index.get_max_elements():
+                self.index.resize_index(self.index.get_max_elements()*2)
+            self.index.add_items(vector.reshape(1,-1), [label])
+        except Exception:
+            self._index_unhealthy = True
+            raise
 
     def _retire_record(self, db, record_id):
         """Erase every vector for one record across all model revisions.
@@ -449,13 +473,57 @@ class SemanticIndex:
             AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)""",
             (record_id,)).fetchone())
 
+    def _rebuild_accelerator(self):
+        """Reconstruct the running accelerator from durable vectors for live,
+        visible records into a separate instance, then swap it in atomically.
+
+        The suspect object is discarded because an ambiguous insertion may have
+        mutated it. Only canonical-live chunks are rehydrated and their stored
+        vectors are reused, so a publication-only failure never re-embeds. The
+        swap happens under the index lock and replaces the row map wholesale,
+        which also prunes any retired label, so a rebuild cannot resurrect
+        evidence the canonical archive removed. A rebuild failure re-raises
+        before the swap and leaves the accelerator unhealthy, so the triggering
+        work stays retryable and readiness stays degraded.
+        """
+        with self.store.connect() as db:
+            stored = [dict(r) for r in db.execute(
+                "SELECT v.id,v.record_id,v.start,v.end,v.vector FROM vector_chunks v "
+                "JOIN records r ON r.id=v.record_id WHERE v.model=? AND r.deleted=0 "
+                "AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1) "
+                "ORDER BY v.id", (self.key,))]
+        np = self.np
+        replacement = None
+        rows = {}
+        for row in stored:
+            vector = np.frombuffer(row["vector"], dtype=np.float32).copy()
+            vector /= np.linalg.norm(vector)
+            if replacement is None:
+                replacement = self.hnsw.Index(space="cosine", dim=len(vector))
+                replacement.init_index(max_elements=1024, ef_construction=160, M=24, random_seed=17)
+                replacement.set_num_threads(2)
+            if replacement.get_current_count() >= replacement.get_max_elements():
+                replacement.resize_index(replacement.get_max_elements()*2)
+            replacement.add_items(vector.reshape(1,-1), [row["id"]])
+            rows[row["id"]] = (row["record_id"], row["start"], row["end"])
+        with self.lock:
+            if replacement is not None:
+                self.index = replacement
+            self.rows = rows
+            self._index_unhealthy = False
+
     def _publish(self, rows):
         """Add durable vectors to the running search index.
 
         Publication is distinct from persistence and idempotent: chunks already
-        present are skipped, so a partially published record completes on retry
-        without duplicate index entries or another embedding request.
+        recorded in the accelerator are skipped. If an earlier insertion failed
+        ambiguously, the accelerator is rebuilt from valid durable chunks first
+        - reusing stored vectors, never re-embedding - so membership in the row
+        map is trustworthy proof of publication again before the pending rows
+        are added.
         """
+        if self.hnsw and self._index_unhealthy:
+            self._rebuild_accelerator()
         for row in rows:
             if row["id"] not in self.rows:
                 self._add(row)
@@ -602,5 +670,6 @@ class SemanticIndex:
         return {"enabled":True,"model_key":self.key,"failed_records":failures,"index":"hnsw" if self.hnsw else "exact_numpy",
                 "pending_records":remaining,"pending_retirements":retirements,
                 "pending_registrations":registrations,
-                "ready":remaining==0 and retirements==0 and registrations==0 and self.last_error is None,
+                "accelerator_healthy":not self._index_unhealthy,
+                "ready":remaining==0 and retirements==0 and registrations==0 and self.last_error is None and not self._index_unhealthy,
                 "error":self.last_error}
