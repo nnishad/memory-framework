@@ -49,6 +49,8 @@ def normalize(settings):
             raise ValueError("External Hindsight requires an http(s) url")
         if "backend_id" not in supplied:merged["backend_id"]="external:"+merged["url"]
     retrieval["hindsight"]=merged
+    from . import extraction
+    retrieval["attachment_extraction"]=extraction.normalize_config(retrieval.get("attachment_extraction"))
     return settings
 
 

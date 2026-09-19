@@ -52,10 +52,17 @@ def emails(path, source="email"):
             headers={k:str(message.get(k,"")) for k in ("From","To","Cc","Subject","Date","Message-ID","In-Reply-To","References")}
             content="\n".join(f"{k}: {v}" for k,v in headers.items() if v)+"\n\n"+text
             sid=headers["Message-ID"].strip() or "sha256:"+digest([headers,text])
+            descriptors=[]
+            for index,part in enumerate(message.iter_attachments()):
+                payload=part.get_payload(decode=True) or b""
+                descriptors.append({"source_id":sid,"part_id":str(index),
+                                    "filename":part.get_filename() or "attachment",
+                                    "mime":part.get_content_type(),"size":len(payload)})
             yield {"source":source,"source_id":sid,"occurred_at":when.isoformat(),"text":content,"kind":"email",
                    "metadata":{"headers":headers,"participants":participants,
-                               "attachments":[str(p.get_filename()) for p in message.iter_attachments()],
-                               "attachment_contents_imported":False,"quoted_content_preserved":True}}
+                               "attachments":[d["filename"] for d in descriptors],
+                               "attachment_descriptors":descriptors,
+                               "attachment_contents_imported":bool(descriptors),"quoted_content_preserved":True}}
     finally:
         if path.suffix.lower()!=".eml": box.close()
 

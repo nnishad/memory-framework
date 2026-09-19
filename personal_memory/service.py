@@ -158,7 +158,8 @@ class MemoryService:
             '/v1/tasks':lambda a:self.intelligence.tasks(**a),'/v1/workflow':lambda a:self.workflows.get(**a),
             '/v1/quality':lambda a:{**self.intelligence.quality(),'workflows':self.workflows.status()}})
         from .source_runtime import SourceRuntime
-        self.sources=SourceRuntime(self.store,data_dir,source_config,adapters=source_adapters)
+        self.sources=SourceRuntime(self.store,data_dir,source_config,adapters=source_adapters,
+                                   extraction_config=(retrieval_config or {}).get('attachment_extraction'))
         self._closables.append(self.sources)
         self.routes.update({'/v1/sources/status':lambda a:self.sources.status(**a),
                             '/v1/sources/gmail/connect':lambda a:self.sources.connect_gmail(**a),

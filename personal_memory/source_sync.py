@@ -603,6 +603,17 @@ class SourceSync:
                    ("sjob_" + digest([dedupe_key])[:24], connection_id, kind, dedupe_key,
                     json.dumps(payload, sort_keys=True), now(), now(), now()))
 
+    def enqueue_job(self, connection_id, kind, dedupe_key, payload):
+        """Public, transactional job enqueue. INSERT OR IGNORE on the UNIQUE dedupe_key
+        makes repeated enqueues idempotent."""
+        required_text(kind, "kind", 50)
+        required_text(dedupe_key, "dedupe_key", 500)
+        with self.store.lock, self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._connection(db, connection_id)
+            self._enqueue_job(db, connection_id, kind, dedupe_key, payload)
+        return {"connection_id": connection_id, "kind": kind, "dedupe_key": dedupe_key}
+
     # ---- durable event inbox -------------------------------------------------
 
     def signal(self, connection_id, *, event_id=None, payload=None):

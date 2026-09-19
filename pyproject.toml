@@ -7,7 +7,7 @@ name = "hermes-personal-memory"
 version = "0.8.0rc8"
 description = "Evidence-linked personal memory service and Hermes provider adapter"
 requires-python = ">=3.11"
-dependencies = ["hindsight-api-slim[embedded-db,local-onnx]==0.9.2", "hindsight-embed==0.9.2", "fastembed==0.8.0"]
+dependencies = ["hindsight-api-slim[embedded-db,local-onnx]==0.9.2", "hindsight-embed==0.9.2", "fastembed==0.8.0", "pypdfium2>=5,<6", "Pillow>=12,<13"]
 
 [project.optional-dependencies]
 setup = ["PyYAML>=6"]

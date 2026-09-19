@@ -1,0 +1,82 @@
+{
+  "hermes_tag": "v2026.9.14",
+  "hermes_commit": "345cd2b057a452236de401d3534b8502a7465e8d",
+  "provider_contract_sha256": "f1fe9f9941d0bdaba67d9357cfd2d1112cae9d68fceb853b010e0e9b60036d20",
+  "checks": [
+    {
+      "check": "real user-plugin discovery and copied-module loading",
+      "passed": true
+    },
+    {
+      "check": "native CLI string-valued setup and declarative dashboard configuration",
+      "passed": true
+    },
+    {
+      "check": "exclusive setup keeps native memory surfaces enabled while selecting the canonical provider store",
+      "passed": true
+    },
+    {
+      "check": "actual host tool injection, duplicate suppression and disabled-toolset gate",
+      "passed": true
+    },
+    {
+      "check": "actual manager background sync and tool dispatch to authenticated live service",
+      "passed": true
+    },
+    {
+      "check": "native investigation schema, planning guidance, two-branch tool dispatch, capability discovery and upgrade doctor",
+      "passed": true
+    },
+    {
+      "check": "progressive recall and evidence-backed learning tools through copied ASGI; inactive proposals and secondary write guard",
+      "passed": true
+    },
+    {
+      "check": "structured beliefs, task transitions and durable consolidation through real Hermes tools",
+      "passed": true
+    },
+    {
+      "check": "executed evaluation suite, administrator promotion and capability-scoped procedure via actual Hermes tool",
+      "passed": true
+    },
+    {
+      "check": "first-call recall injection, host indicator and stable system prompt",
+      "passed": true
+    },
+    {
+      "check": "slow recall stays bounded and does not report a stale recall indicator",
+      "passed": true
+    },
+    {
+      "check": "normalized checkpoint-v2 evidence and host fail-closed propagation",
+      "passed": true
+    },
+    {
+      "check": "serialized session boundary and new-session source attribution",
+      "passed": true
+    },
+    {
+      "check": "tool outputs and delegated results captured; memory results excluded; replay deduplicated",
+      "passed": true
+    },
+    {
+      "check": "real loaded provider withholds tools, recall and capture from unauthorized/shared sessions",
+      "passed": true
+    },
+    {
+      "check": "actual Hermes native backup contains independently readable SQLite snapshots",
+      "passed": true
+    },
+    {
+      "check": "manager shutdown drains writes and closes adapter workers",
+      "passed": true
+    }
+  ],
+  "passed": 17,
+  "failed": 0,
+  "scope": "Actual release loader, MemoryManager, tool gate, context fence and live copied ASGI service. Agent tool-surface container is a SimpleNamespace; no AIAgent/LLM/desktop/gateway end-to-end run.",
+  "live_llm_tested": false,
+  "provider_recipient_gate_tested": true,
+  "native_backup_sqlite_snapshot_tested": true,
+  "full_native_import_cycle_tested": false
+}

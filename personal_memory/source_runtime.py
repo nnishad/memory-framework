@@ -11,13 +11,15 @@ from .source_sdk import AdapterError, connection_context
 from .source_secrets import SecretStore
 from .source_sync import SourceSync, SyncWorker
 from .common import digest, now
+from . import extraction
 
 LOG=logging.getLogger(__name__)
 
 
 class SourceRuntime:
-    def __init__(self, store, data_dir, config=None, adapter=None, adapters=()):
+    def __init__(self, store, data_dir, config=None, adapter=None, adapters=(), extraction_config=None):
         self.store=store; self.config=config or {}
+        self.extraction_config=extraction.normalize_config(extraction_config or {})
         self.secrets=SecretStore(Path(data_dir)/'source-secrets.json')
         self.adapter=adapter or GmailAdapter()
         self.sync=SourceSync(store,{'google.gmail':self.adapter},self.secrets)
@@ -297,6 +299,7 @@ class SourceRuntime:
                     # arrivals) stays pending for the next pass.
                     self.sync.ack_signals(cid,up_to=signals['up_to'])
                 if not self.stop.is_set():self._attachment(cid)
+                if not self.stop.is_set():self._extraction(cid)
         finally:self.tick_lock.release()
 
     def _attachment(self,cid):
@@ -331,9 +334,72 @@ class SourceRuntime:
                         if index in blob['received_chunks']:continue
                         blobs.put(self.store,blob_id=blob['id'],index=index,data=base64.b64encode(raw[start:start+blobs.CHUNK_SIZE]).decode())
                     blobs.complete(self.store,blob_id=blob['id'])
-                self.sync.complete_job(job,{'blob_id':blob['id'],'stored':True,'text_extraction':'not performed'})
+                self.sync.complete_job(job,{'blob_id':blob['id'],'stored':True,'text_extraction':'enqueued'})
+            if not extraction.extraction_disabled(self.extraction_config):
+                self.sync.enqueue_job(cid,'extraction','extraction:'+blob['id'],
+                    {'record_id':rid,'blob_id':blob['id'],'filename':descriptor['filename'][:255],
+                     'mime':descriptor['mime'],'size':len(raw)})
         except Exception as error:
             try:self.sync.fail_job(job,reason=type(error).__name__+': attachment processing failed',retry_after=60,quarantine=job['attempts']>=4)
+            except ValueError:pass
+
+    def _read_blob(self,blob_id):
+        """Reassemble a stored attachment blob from its chunks."""
+        from . import blobs
+        import base64
+        chunks=[];index=0;meta=None
+        while True:
+            part=blobs.read(self.store,blob_id=blob_id,index=index)
+            meta=part
+            chunks.append(base64.b64decode(part['data']))
+            if part['next_index'] is None:break
+            index=part['next_index']
+        raw=b''.join(chunks)
+        if meta is None or len(raw)!=meta['size']:raise ValueError('Blob size does not match stored metadata')
+        return raw,meta['mime'],meta['filename']
+
+    def _extraction(self,cid):
+        try:job=self.sync.claim_job(self.worker.owner,kinds=('extraction',),connection_id=cid,ttl=300)
+        except ValueError:return
+        if not job:return
+        try:
+            payload=job['payload'];rid=payload['record_id'];blob_id=payload['blob_id']
+            with self.store.connect() as db:
+                row=db.execute("SELECT source,NULLIF(occurred_at,'') AS occurred_at FROM records "
+                               "WHERE id=? AND deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility "
+                               "WHERE record_id=? AND hidden=1)",(rid,rid)).fetchone()
+            if not row:
+                self.sync.complete_job(job,{'skipped':'evidence retired'});return
+            cfg=self.extraction_config
+            if extraction.extraction_disabled(cfg):
+                self.sync.complete_job(job,{'skipped':'extraction disabled'});return
+            if not extraction.endpoint_configured(cfg):
+                self.sync.complete_job(job,{'skipped':'extraction endpoint not configured'});return
+            # Idempotency guard: the model is non-deterministic, so a second pass over the
+            # same blob would produce different text and collide on the deterministic
+            # source_id ("increment revision"). Skip if a live derived record already exists.
+            source_id='attachment-text:'+blob_id
+            with self.store.connect() as db:
+                existing=db.execute('SELECT id FROM records WHERE source=? AND source_id=? AND deleted=0',
+                                    (row['source'],source_id)).fetchone()
+            if existing:
+                self.sync.complete_job(job,{'derived_record_id':existing['id'],'duplicate':True});return
+            raw,mime,filename=self._read_blob(blob_id)
+            mime=payload.get('mime') or mime;filename=payload.get('filename') or filename
+            try:
+                result=extraction.extract_text(raw,mime,filename,cfg)
+            except extraction.ExtractionError as error:
+                if error.kind in extraction.ExtractionError.SKIP_KINDS:
+                    self.sync.complete_job(job,{'skipped':error.kind,'detail':error.message});return
+                self.sync.fail_job(job,reason=error.kind+': '+error.message,retry_after=60,
+                                   quarantine=job['attempts']>=4);return
+            record=extraction.build_derived_record(parent_source=row['source'],
+                parent_occurred_at=row['occurred_at'] or None,blob_id=blob_id,record_id=rid,
+                mime=mime,filename=filename,result=result,observed_at=now())
+            derived_id=self.store.ingest_contract([record])['records'][0]['id']
+            self.sync.complete_job(job,{'derived_record_id':derived_id,'chars':result['chars'],'method':result['method']})
+        except Exception as error:
+            try:self.sync.fail_job(job,reason=type(error).__name__+': extraction failed',retry_after=60,quarantine=job['attempts']>=4)
             except ValueError:pass
 
     def _run(self):

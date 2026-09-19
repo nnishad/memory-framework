@@ -7,6 +7,9 @@ PyYAML==6.0.3
 hindsight-api-slim==0.9.2
 hindsight-embed==0.9.2
 hnswlib==0.8.0
+# Attachment text extraction (S1): PDF text-layer/render + image encode.
+pypdfium2==5.13.0
+pillow==12.3.0
 # Embedding/ML stack exercised on the GPU (local-ml) path. torch's CUDA wheel carries a
 # host-specific local label (cu128 on Blackwell, cu130 on Ampere), so only the public version
 # is recorded here; doctor's embedding_stack check guards against a major-version jump that
