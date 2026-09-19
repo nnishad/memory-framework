@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS semantic_bootstrap(
   model TEXT PRIMARY KEY, enqueued_at TEXT NOT NULL);
 """
 
+# The same statements, one per execute, so schema setup can run inside an explicit
+# transaction: executescript would commit any transaction the caller already owns.
+_WORK_STATEMENTS = tuple(
+    statement.strip()
+    for statement in WORK_SCHEMA.split(";")
+    if statement.strip())
+
 # Change history is retained at least this long; a model whose replay window
 # was pruned reconciles from the canonical archive instead of guessing.
 HISTORY_RETENTION = 50000
@@ -72,6 +79,24 @@ def enqueue(db, kind, record_ids):
         _signal(db, kind, rid, journal=True)
 
 
+def _ensure_seq_singleton(db):
+    """Establish the revision clock as a schema invariant: the singleton row exists
+    whenever queue setup completes, even for an archive with no records or signals.
+
+    A new archive starts at zero. Repairing never lowers an existing clock: it is
+    seeded from the highest durable revision across the work, history and progress
+    tables, so the next signal is strictly newer than anything already journalled.
+    """
+    durable = db.execute("""SELECT COALESCE(MAX(seq),0) FROM (
+            SELECT seq FROM semantic_work UNION ALL
+            SELECT seq FROM semantic_history UNION ALL
+            SELECT seq FROM semantic_progress)""").fetchone()[0]
+    if db.execute("SELECT 1 FROM semantic_seq WHERE id=1").fetchone() is None:
+        db.execute("INSERT INTO semantic_seq VALUES(1,?)", (durable,))
+    else:
+        db.execute("UPDATE semantic_seq SET value=max(value,?) WHERE id=1", (durable,))
+
+
 def ensure_schema(db):
     """Create the queue schema and migrate the legacy two-kinds-per-record form.
 
@@ -79,30 +104,38 @@ def ensure_schema(db):
     per record survives as that record's desired state, the legacy rowid order
     becomes the revision order, and existing per-model bootstrap markers seed
     progress so an upgraded archive neither re-bootstraps nor loses backlog.
+    A legacy queue is reshaped before any index references the new seq column.
+    No executescript is used, so setup can never implicitly commit a transaction
+    the caller owns; when no caller transaction is open, the migration owns and
+    commits its own. Either way, one atomic pass leaves the revision singleton
+    in place; an injected mid-migration failure rolls back and simply reruns.
     """
-    db.executescript(WORK_SCHEMA)
-    if "seq" in {r[1] for r in db.execute("PRAGMA table_info(semantic_work)")}:
-        return
     # Join the caller's transaction when one is already open; otherwise own the
     # migration transaction and commit it before returning.
     owned = not db.in_transaction
     if owned:
         db.execute("BEGIN IMMEDIATE")
-    db.execute("""CREATE TABLE semantic_work_v2(
-        record_id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN('index','retire')),
-        seq INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-        available_at REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)""")
-    db.execute("""INSERT INTO semantic_work_v2(record_id,kind,seq,attempts,available_at,updated_at)
-        SELECT record_id,kind,id,attempts,available_at,updated_at FROM (
-        SELECT * FROM semantic_work ORDER BY id DESC) GROUP BY record_id""")
-    top = db.execute("SELECT COALESCE(MAX(id),0) FROM semantic_work").fetchone()[0]
-    db.execute("DROP TABLE semantic_work")
-    db.execute("ALTER TABLE semantic_work_v2 RENAME TO semantic_work")
-    db.execute("CREATE INDEX IF NOT EXISTS semantic_work_due ON semantic_work(kind, available_at, seq)")
-    db.execute("INSERT OR IGNORE INTO semantic_seq VALUES(1,?)", (top,))
-    db.execute("UPDATE semantic_seq SET value=max(value,?) WHERE id=1", (top,))
-    db.execute("INSERT OR IGNORE INTO semantic_progress(model,seq,updated_at) SELECT model,?,? FROM semantic_bootstrap",
-               (top, now()))
+    legacy = (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='semantic_work'").fetchone()
+              and "seq" not in {r[1] for r in db.execute("PRAGMA table_info(semantic_work)")})
+    if legacy:
+        db.execute("""CREATE TABLE semantic_work_v2(
+            record_id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN('index','retire')),
+            seq INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+            available_at REAL NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)""")
+        db.execute("""INSERT INTO semantic_work_v2(record_id,kind,seq,attempts,available_at,updated_at)
+            SELECT record_id,kind,id,attempts,available_at,updated_at FROM (
+            SELECT * FROM semantic_work ORDER BY id DESC) GROUP BY record_id""")
+        db.execute("DROP TABLE semantic_work")
+        db.execute("ALTER TABLE semantic_work_v2 RENAME TO semantic_work")
+    for statement in _WORK_STATEMENTS:
+        db.execute(statement)
+    _ensure_seq_singleton(db)
+    if legacy:
+        # The migrated seq values already bound the durable revisions; bootstrap
+        # markers seed per-model progress at the clock so an upgrade never rescans.
+        db.execute("INSERT OR IGNORE INTO semantic_progress(model,seq,updated_at)"
+                   " SELECT model,(SELECT value FROM semantic_seq WHERE id=1),? FROM semantic_bootstrap",
+                   (now(),))
     if owned:
         db.commit()
 
@@ -198,17 +231,17 @@ class SemanticIndex:
         except ImportError:
             self.hnsw = None
         with store.lock, store.connect() as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS vector_failures(
-                  model TEXT,record_id TEXT,error TEXT,attempts INTEGER,next_retry REAL,PRIMARY KEY(model,record_id));
-                CREATE TABLE IF NOT EXISTS vector_chunks(
+            for statement in (
+                    """CREATE TABLE IF NOT EXISTS vector_failures(
+                  model TEXT,record_id TEXT,error TEXT,attempts INTEGER,next_retry REAL,PRIMARY KEY(model,record_id))""",
+                    """CREATE TABLE IF NOT EXISTS vector_chunks(
                   id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL,
                   record_id TEXT NOT NULL REFERENCES records(id), start INTEGER NOT NULL,
-                  end INTEGER NOT NULL, vector BLOB NOT NULL, UNIQUE(model,record_id,start));
-                CREATE TABLE IF NOT EXISTS vector_done(
+                  end INTEGER NOT NULL, vector BLOB NOT NULL, UNIQUE(model,record_id,start))""",
+                    """CREATE TABLE IF NOT EXISTS vector_done(
                   model TEXT NOT NULL, record_id TEXT NOT NULL REFERENCES records(id),
-                  PRIMARY KEY(model,record_id));
-            """)
+                  PRIMARY KEY(model,record_id))"""):
+                db.execute(statement)
             ensure_schema(db)
             # Activating this model revision reconciles its position in the
             # durable change history inside one transaction: an interrupted
