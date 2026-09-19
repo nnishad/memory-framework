@@ -28,6 +28,11 @@ def wire_record():
                           source_locator="fixture://a",observed_at="2024-03-01T09:00:00Z")
 
 
+# Sentinel for "no prefetch result observed yet". An empty string is a real (suppressed)
+# prefetch result, so it cannot double as the absence marker.
+_NO_PREFETCH_RESULT = object()
+
+
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -353,12 +358,18 @@ class UpstreamContractTests(HTTPFixture):
             return "failed"
         return "unknown"
 
-    def await_prefetch(self, provider, query, state, wait=90):
+    def await_prefetch(self, provider, query, state, wait=90, observed=_NO_PREFETCH_RESULT):
         """Poll the background-filled prefetch cache; return the first result observed in the
-        requested state ('packet', 'suppressed', or 'failed'). Timing out fails the test instead
-        of handing back a pending notice, which would make later assertions race the search.
-        The generous default budget is cold-model load latency, not behaviour: every claim
-        under test is still checked exactly as written."""
+        requested state ('packet', 'suppressed', or 'failed'). Pass an already-observed result
+        (for example the first call's return) as `observed` and it is classified before the
+        provider is called again: consuming a packet marks its evidence injected, so a repeat
+        prefetch of the same query legitimately returns suppressed '' forever and a re-poll
+        would race that real behavior. Timing out fails the test instead of handing back a
+        pending notice, which would make later assertions race the search. The generous default
+        budget is cold-model load latency, not behaviour: every claim under test is still
+        checked exactly as written."""
+        if observed is not _NO_PREFETCH_RESULT and self.prefetch_state(observed) == state:
+            return observed
         deadline = time.monotonic() + wait
         result = ""
         while time.monotonic() < deadline:
@@ -481,8 +492,10 @@ class UpstreamContractTests(HTTPFixture):
         first=provider.prefetch('PostgreSQL')
         # Inspect the first return, then synchronise with completion: the packet state proves
         # the cached result landed and passed the generation check, unlike the old inflight drain.
+        # A packet observed on the first call is already consumed; re-polling would race the
+        # legitimate duplicate suppression, so the helper classifies `first` before calling again.
         self.assertIn(self.prefetch_state(first),('pending','packet'))
-        self.await_prefetch(provider,'PostgreSQL',state='packet')
+        self.await_prefetch(provider,'PostgreSQL',state='packet',observed=first)
         # A bare search resolves to balanced/8, which the fast/4 prefetch cannot cover, so it must
         # run a real retrieval instead of silently downgrading to the cached narrow one.
         result=json.loads(provider.handle_tool_call('personal_memory_search',{'query':'PostgreSQL'}))
@@ -501,7 +514,7 @@ class UpstreamContractTests(HTTPFixture):
         provider.client.call=counted
         first=provider.prefetch('PostgreSQL')
         self.assertIn(self.prefetch_state(first),('pending','packet'))
-        self.await_prefetch(provider,'PostgreSQL',state='packet')
+        self.await_prefetch(provider,'PostgreSQL',state='packet',observed=first)
         # An explicit search that asks for no more than the prefetch capability (fast/4) reuses it.
         result=json.loads(provider.handle_tool_call('personal_memory_search',
                                                     {'query':'PostgreSQL','depth':'fast','limit':4}))
@@ -523,7 +536,7 @@ class UpstreamContractTests(HTTPFixture):
         provider.client.call=counted
         first=provider.prefetch('shared-token')
         self.assertIn(self.prefetch_state(first),('pending','packet'))
-        self.await_prefetch(provider,'shared-token',state='packet')
+        self.await_prefetch(provider,'shared-token',state='packet',observed=first)
         limited=json.loads(provider.handle_tool_call('personal_memory_search',
                            {'query':'shared-token','depth':'fast','limit':1}))
         self.assertEqual(len(limited['episodes']),1)
@@ -656,7 +669,55 @@ class UpstreamContractTests(HTTPFixture):
         # A warm backend may finish inside the bounded wait; a cold one returns the notice.
         self.assertIn(self.prefetch_state(first), ("pending", "packet"))
         self.assertLess(returned, 1.0)  # prefetch_wait_ms caps the block at 200ms + overhead
-        self.assertIn("PostgreSQL", self.await_prefetch(provider, "PostgreSQL", state="packet"))
+        self.assertIn("PostgreSQL", self.await_prefetch(provider, "PostgreSQL", state="packet",
+                                                        observed=first))
+
+    def _gated_search_provider(self, gate):
+        """Provider whose /v1/search transport is gated on a threading event and answers with one
+        controlled packet, making immediate and delayed first responses deterministic instead of
+        latency-dependent. Other routes (generation checks) keep the real service transport."""
+        provider = self.provider()
+        real = provider.client.call
+        hits = []
+        def gated(path, *args, **kwargs):
+            if path != '/v1/search':
+                return real(path, *args, **kwargs)
+            self.assertTrue(gate.wait(10), "gated search never released")
+            hits.append(1)
+            return {"episodes": [{"id": 9001, "record_id": "gated-1",
+                                  "text": "Amit uses PostgreSQL for the primary database",
+                                  "source": "fixture-whatsapp",
+                                  "occurred_at": "2024-03-01T09:00:00+00:00"}],
+                    "claims": [], "diagnostics": {}}
+        provider.client.call = gated
+        return provider, hits
+
+    def test_prefetch_immediate_packet_is_observed_once_then_suppressed(self):
+        # Deterministic contract (no model latency): when the search lands within the bounded
+        # wait, the first prefetch itself carries the packet; consuming it marks the evidence
+        # injected, so the next identical prefetch is a real suppressed '' without a new lookup.
+        gate = threading.Event(); gate.set()
+        provider, hits = self._gated_search_provider(gate)
+        provider.prefetch_wait_seconds = 5  # generous for the already-open gate; never the 90s poll
+        first = provider.prefetch('PostgreSQL')
+        self.assertEqual(self.prefetch_state(first), 'packet')
+        self.assertIn('PostgreSQL', first)
+        second = provider.prefetch('PostgreSQL')
+        self.assertEqual(self.prefetch_state(second), 'suppressed')
+        self.assertEqual(second, "")
+        self.assertEqual(len(hits), 1)  # suppression reused the cache; no second search
+
+    def test_prefetch_pending_response_becomes_a_packet_after_the_gated_search(self):
+        # Deterministic delayed response: the first call observes pending, and the same packet
+        # arrives once the controlled search is released - without the test re-consuming it.
+        gate = threading.Event()
+        provider, hits = self._gated_search_provider(gate)
+        first = provider.prefetch('PostgreSQL')
+        self.assertEqual(self.prefetch_state(first), 'pending')
+        gate.set()
+        packet = self.await_prefetch(provider, 'PostgreSQL', state='packet', observed=first, wait=10)
+        self.assertIn('PostgreSQL', packet)
+        self.assertEqual(len(hits), 1)  # pending polls must not launch duplicate lookups
 
 
 if __name__ == "__main__":

@@ -174,12 +174,44 @@ class RetrievalTests(Fixture):
         class FakeSemantic:
             def __init__(self,*args,**kwargs):
                 calls.append(1);time.sleep(.05)
-        h=Hybrid(self.store,start=False);self.addCleanup(h.close)
-        with patch('personal_memory.semantic.SemanticIndex',FakeSemantic):
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                engines=list(pool.map(lambda _:h._ensure_semantic(),range(8)))
-        self.assertEqual(len(calls),1)
-        self.assertTrue(all(engine is engines[0] for engine in engines))
+        # This test exercises the default-on initialization lock, so it explicitly scopes the
+        # environment it needs instead of inheriting a run-wide kill-switch: the semantic path
+        # is enabled for a dependency-light constructor check, and patch.dict restores the
+        # previous environment even when an assertion inside the block fails.
+        saved=os.environ.get("PERSONAL_MEMORY_DISABLE_SEMANTIC")
+        _env_restore(self,"PERSONAL_MEMORY_DISABLE_SEMANTIC",saved)
+        for outer in ("1",None):  # the outer semantic kill-switch both set and unset
+            with self.subTest(outer_kill_switch=outer):
+                if outer is None: os.environ.pop("PERSONAL_MEMORY_DISABLE_SEMANTIC",None)
+                else: os.environ["PERSONAL_MEMORY_DISABLE_SEMANTIC"]=outer
+                calls.clear()
+                with patch.dict(os.environ,{"PERSONAL_MEMORY_DISABLE_SEMANTIC":"0"}):
+                    h=Hybrid(self.store,start=False)
+                    try:
+                        with patch('personal_memory.semantic.SemanticIndex',FakeSemantic):
+                            with ThreadPoolExecutor(max_workers=8) as pool:
+                                engines=list(pool.map(lambda _:h._ensure_semantic(),range(8)))
+                    finally:
+                        h.close()
+                self.assertEqual(len(calls),1)
+                self.assertTrue(all(engine is engines[0] for engine in engines))
+            self.assertEqual(os.environ.get("PERSONAL_MEMORY_DISABLE_SEMANTIC"),outer)  # restored
+
+    def test_scoped_environment_patch_restores_even_after_failure(self):
+        # The harness guarantee the concurrency test above relies on: the scoped patch unwinds
+        # the kill-switch on both the success path and an injected assertion failure.
+        from contextlib import nullcontext
+        from unittest.mock import patch
+        saved=os.environ.get("PERSONAL_MEMORY_DISABLE_SEMANTIC")
+        _env_restore(self,"PERSONAL_MEMORY_DISABLE_SEMANTIC",saved)
+        os.environ["PERSONAL_MEMORY_DISABLE_SEMANTIC"]="1"
+        for injected in (False,True):
+            with self.subTest(injected_failure=injected):
+                with self.assertRaises(AssertionError) if injected else nullcontext():
+                    with patch.dict(os.environ,{"PERSONAL_MEMORY_DISABLE_SEMANTIC":"0"}):
+                        self.assertNotIn(os.environ["PERSONAL_MEMORY_DISABLE_SEMANTIC"],{"1","true"})
+                        if injected: raise AssertionError("injected failure")
+                self.assertEqual(os.environ["PERSONAL_MEMORY_DISABLE_SEMANTIC"],"1")
 
     def test_rerank_noops_when_explicitly_disabled(self):
         a,b=self.put(record(1,"alpha answer here"),record(2,"beta answer here"))
