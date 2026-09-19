@@ -87,6 +87,11 @@ class QueueStateTests(unittest.TestCase):
         with self.store.connect() as db:
             return [dict(r) for r in db.execute(sql, (kind,) if kind else ())]
 
+    def model_work_rows(self, model):
+        with self.store.connect() as db:
+            return [dict(r) for r in db.execute(
+                "SELECT * FROM semantic_model_work WHERE model=?", (model,))]
+
     def vector_count(self, record_id=None, model=None):
         sql = "SELECT COUNT(*) FROM vector_chunks WHERE 1=1"
         arguments = []
@@ -108,6 +113,7 @@ class QueueStateTests(unittest.TestCase):
             # drain loop terminates without sleeping through exponential delays.
             with self.store.connect() as db:
                 db.execute("UPDATE semantic_work SET available_at=0 WHERE attempts>0")
+                db.execute("UPDATE semantic_model_work SET available_at=0 WHERE attempts>0")
             if not engine.sync(batch=64):
                 return
         self.fail("queue did not drain")
@@ -156,8 +162,9 @@ class QueueStateTests(unittest.TestCase):
         engine._add = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("publish down"))
         engine.sync(batch=64)                            # processes the retirement
         engine._add = real_add
-        rows = self.work_rows("index")
+        rows = self.model_work_rows(engine.key)
         self.assertEqual([rid], [r["record_id"] for r in rows])  # restore survived the ack
+        self.assertEqual([], self.work_rows("index"))            # the shared signal was distributed
         self.assertEqual(1, rows[0]["attempts"])         # fresh revision, not the swallowed one
         self.drain(engine)
         self.assertEqual(1, self.vector_count(rid))
@@ -193,8 +200,9 @@ class QueueStateTests(unittest.TestCase):
             raise RuntimeError("index publish failed")
         engine._add = refuse
         engine.sync(batch=64)
-        rows = self.work_rows("index")
+        rows = self.model_work_rows(engine.key)
         self.assertEqual([rid], [r["record_id"] for r in rows])  # work retained, not acked
+        self.assertEqual([], self.work_rows("index"))            # the shared signal was distributed away
         self.assertGreater(rows[0]["attempts"], 0)
         self.assertGreater(rows[0]["available_at"], time.time())  # bounded retry
         self.assertEqual(1, self.vector_count(rid))               # vectors stayed durable
@@ -212,10 +220,11 @@ class QueueStateTests(unittest.TestCase):
         self.assertEqual(1, len(self.embedder.embedded))
         engine._add = real_add
         with self.store.connect() as db:
-            db.execute("UPDATE semantic_work SET available_at=0")
+            db.execute("UPDATE semantic_model_work SET available_at=0")
         self.drain(engine)
         self.assertEqual(1, len(self.embedder.embedded))  # retry never re-embedded
         self.assertEqual([], self.work_rows())
+        self.assertEqual([], self.model_work_rows(engine.key))
         self.assertTrue(self.done(engine, rid))
         self.assertTrue(engine.status()["ready"])
         self.assertEqual([rid], [c["id"] for c in engine.candidates("garage engine", 5)])
@@ -261,10 +270,10 @@ class QueueStateTests(unittest.TestCase):
         engine.sync(batch=64)
         self.assertEqual(2, self.vector_count(rid))        # both chunks are durable
         self.assertEqual(1, len(engine.rows))              # first chunk published, second failed
-        self.assertGreater(len(self.work_rows()), 0)       # retryable work remains
+        self.assertGreater(len(self.model_work_rows(engine.key)), 0)  # retryable work remains
         engine._add = real_add
         with self.store.connect() as db:
-            db.execute("UPDATE semantic_work SET available_at=0")
+            db.execute("UPDATE semantic_model_work SET available_at=0")
         self.drain(engine)
         self.assertEqual(2, len(engine.rows))              # exactly two entries, no duplicates
         self.assertEqual(1, len({row[0] for row in engine.rows.values()}))

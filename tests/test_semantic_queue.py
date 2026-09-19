@@ -67,6 +67,11 @@ class SemanticQueueTests(unittest.TestCase):
         with self.store.connect() as db:
             return [dict(r) for r in db.execute(sql, (kind,) if kind else ())]
 
+    def model_work_rows(self, model):
+        with self.store.connect() as db:
+            return [dict(r) for r in db.execute(
+                "SELECT * FROM semantic_model_work WHERE model=?", (model,))]
+
     def vector_count(self, record_id=None, model=None):
         sql = "SELECT COUNT(*) FROM vector_chunks WHERE 1=1"
         arguments = []
@@ -125,19 +130,21 @@ class SemanticQueueTests(unittest.TestCase):
         engine = self.engine()
         engine.embedder.fail_for = {"storm"}
         engine.sync(batch=64)
-        rows = self.work_rows("index")
+        rows = self.model_work_rows(engine.key)
         self.assertEqual([bad], [r["record_id"] for r in rows])  # good committed and left the queue
+        self.assertEqual([], self.work_rows("index"))            # the shared signal was distributed away
         self.assertGreater(rows[0]["attempts"], 0)
         self.assertGreater(rows[0]["available_at"], time.time())  # durable backoff, not a tight loop
         # A restart loses nothing: the queue is the durable record of work.
         engine.embedder.fail_for = set()
         restarted = self.engine(embedder=engine.embedder)
         with restarted.store.connect() as db:
-            db.execute("UPDATE semantic_work SET available_at=0")
+            db.execute("UPDATE semantic_model_work SET available_at=0")
         while restarted.sync(batch=64):
             pass
         self.assertEqual(1, self.vector_count(bad))
         self.assertEqual([], self.work_rows())
+        self.assertEqual([], self.model_work_rows(engine.key))
 
     def test_restart_does_not_reindex_committed_vectors(self):
         self.put("done", text="already embedded")
@@ -208,7 +215,7 @@ class SemanticQueueTests(unittest.TestCase):
         self.assertEqual(0, reopened.sync(batch=64))
         changed = FakeEmbedder(); changed.key = "queue-model-v2"
         upgraded = self.engine(embedder=changed)
-        self.assertEqual({r["record_id"] for r in self.work_rows("index")}, set(ids))
+        self.assertEqual({r["record_id"] for r in self.model_work_rows("queue-model-v2")}, set(ids))
         while upgraded.sync(batch=64):
             pass
         self.assertEqual(3, self.vector_count(model="queue-model-v2"))

@@ -60,6 +60,11 @@ class ModelProgressTests(unittest.TestCase):
         with self.store.connect() as db:
             return [dict(r) for r in db.execute(sql, (kind,) if kind else ())]
 
+    def model_work_rows(self, model):
+        with self.store.connect() as db:
+            return [dict(r) for r in db.execute(
+                "SELECT * FROM semantic_model_work WHERE model=?", (model,))]
+
     def vector_count(self, record_id=None, model=None):
         sql = "SELECT COUNT(*) FROM vector_chunks WHERE 1=1"
         arguments = []
@@ -74,6 +79,7 @@ class ModelProgressTests(unittest.TestCase):
         for _ in range(limit):
             with self.store.connect() as db:
                 db.execute("UPDATE semantic_work SET available_at=0 WHERE attempts>0")
+                db.execute("UPDATE semantic_model_work SET available_at=0 WHERE attempts>0")
             if not engine.sync(batch=64):
                 return
         self.fail("queue did not drain")
@@ -111,10 +117,12 @@ class ModelProgressTests(unittest.TestCase):
         self.assertEqual(1, self.vector_count(late, model="model-beta"))
         self.assertEqual(0, self.vector_count(late, model="model-alpha"))
         # Re-activating A must reconcile exactly the missed change - not the
-        # whole archive, and not nothing.
+        # whole archive, and not nothing. The obligation is durable and
+        # model-specific: it survived B consuming the shared signal.
         alpha2 = FakeEmbedder()
         engine_a2 = self.engine(alpha2)
-        self.assertEqual([late], [r["record_id"] for r in self.work_rows("index")])
+        self.assertEqual([late], [r["record_id"] for r in self.model_work_rows("model-alpha")])
+        self.assertEqual([], self.work_rows("index"))  # the shared signal was distributed away
         self.drain(engine_a2)
         self.assertEqual(1, self.vector_count(late, model="model-alpha"))
         self.assertEqual(1, len(alpha2.embedded))  # only the missed record was embedded
@@ -143,24 +151,25 @@ class ModelProgressTests(unittest.TestCase):
         alpha = FakeEmbedder()
         engine_a = self.engine(alpha)
         self.drain(engine_a)
-        original = semantic._signal
+        original = semantic._model_upsert
         state = {"n": 0}
-        def interrupt(db, kind, record_id, **kwargs):
+        def interrupt(db, model, record_id, seq):
             state["n"] += 1
             if state["n"] == 2:
                 raise RuntimeError("activation crashed midway")
-            return original(db, kind, record_id, **kwargs)
-        semantic._signal = interrupt
+            return original(db, model, record_id, seq)
+        semantic._model_upsert = interrupt
         try:
             beta = FakeEmbedder(); beta.key = "model-beta"
             with self.assertRaises(RuntimeError):
                 # Any failure inside activation rolls the whole reconcile back.
                 self.engine(beta)
         finally:
-            semantic._signal = original
+            semantic._model_upsert = original
         with self.store.connect() as db:
-            partial = db.execute("SELECT COUNT(*) FROM semantic_work WHERE kind='index'"
-                                 " AND record_id IN (SELECT id FROM records)").fetchone()[0]
+            partial = db.execute("SELECT COUNT(*) FROM semantic_model_work WHERE model=?"
+                                 " AND record_id IN (SELECT id FROM records)",
+                                 ("model-beta",)).fetchone()[0]
         self.assertEqual(0, partial)                     # nothing half-published survived
         beta2 = FakeEmbedder(); beta2.key = "model-beta"
         engine_b = self.engine(beta2)                # restart resumes cleanly

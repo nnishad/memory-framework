@@ -16,11 +16,15 @@ DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 # Durable incremental work queue: canonical writers enqueue desired-state rows
 # inside their own transaction, so background polling never rescans the archive.
-# One row per record carries a monotonically increasing revision: coalescing
+# One shared row per record carries a monotonically increasing revision: coalescing
 # overwrites the superseded signal instead of queueing a second one, and every
 # acknowledgment is guarded by the revision it processed, so work that arrives
-# during processing survives. An append-only change history lets each model
-# revision keep its own progress instead of a permanent bootstrap marker.
+# during processing survives. The shared row is a signal to distribute, not
+# proof any model finished: each registered model revision owns a durable
+# per-model obligation that survives activation switches, another model's
+# success and its own backoff until it completes or a retirement cancels it.
+# The append-only change history stays for compatibility and diagnostics; no
+# correctness depends on replaying it.
 WORK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS semantic_work(
   record_id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN('index','retire')),
@@ -35,6 +39,14 @@ CREATE TABLE IF NOT EXISTS semantic_progress(
   model TEXT PRIMARY KEY, seq INTEGER NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS semantic_bootstrap(
   model TEXT PRIMARY KEY, enqueued_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS semantic_models(
+  model TEXT PRIMARY KEY, registered_at TEXT NOT NULL,
+  registration_complete INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS semantic_model_work(
+  model TEXT NOT NULL, record_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, available_at REAL NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL, PRIMARY KEY(model, record_id));
+CREATE INDEX IF NOT EXISTS semantic_model_work_due ON semantic_model_work(model, available_at, seq);
 """
 
 # The same statements, one per execute, so schema setup can run inside an explicit
@@ -77,6 +89,19 @@ def enqueue(db, kind, record_ids):
     """
     for rid in record_ids:
         _signal(db, kind, rid, journal=True)
+
+
+def _model_upsert(db, model, record_id, seq):
+    """Raise one model's desired work for a record to the given revision.
+
+    Coalescing never downgrades: an obligation already carrying a newer revision
+    survives an older signal, and a strictly newer revision resets retry state so
+    the fresh desired state is attempted immediately.
+    """
+    db.execute("""INSERT INTO semantic_model_work(model,record_id,seq,attempts,available_at,updated_at)
+        VALUES(?,?,?,0,0,?) ON CONFLICT(model,record_id) DO UPDATE SET
+        seq=excluded.seq,attempts=0,available_at=0,updated_at=excluded.updated_at
+        WHERE semantic_model_work.seq<=excluded.seq""", (model, record_id, seq, now()))
 
 
 def _ensure_seq_singleton(db):
@@ -253,47 +278,60 @@ class SemanticIndex:
                 self._add(dict(row))
 
     def _activate(self, db):
-        """Bring the durable queue to this model revision's desired state.
+        """Register this model revision and establish durable coverage for every
+        revision the archive has ever seen.
 
-        The work queue is shared across model revisions while completion is
-        per-revision, so each model tracks its own position in the append-only
-        change history. Activation replays exactly the changes that arrived
-        since that position - no archive rescan per open, and no permanent
-        bootstrap assumption across model switches. Only a brand-new revision
-        or a history-starved one pays the bounded reconciliation diff.
+        Distribution fans shared signals out to all registered models, so a
+        registered revision can never lose work while it is inactive; a revision
+        seen for the first time (including keys harvested from legacy progress,
+        bootstrap and vector metadata) is reconciled against canonical state
+        exactly once before it is declared covered. An interrupted registration
+        rolls back with this transaction and simply reruns on the next open.
+        Activation is not a completion watermark: unfinished per-model work
+        survives reopen and resumes where it left off.
         """
-        row = db.execute("SELECT seq FROM semantic_progress WHERE model=?", (self.key,)).fetchone()
-        oldest = db.execute("SELECT MIN(seq) FROM semantic_history").fetchone()[0]
-        if row is None or (oldest is not None and oldest > row[0] + 1):
-            self._reconcile(db)
-        else:
-            for change in db.execute("""SELECT h.record_id,h.kind FROM semantic_history h
-                    WHERE h.seq>? AND h.seq=(SELECT MAX(seq) FROM semantic_history m
-                                               WHERE m.record_id=h.record_id)
-                    ORDER BY h.seq""", (row[0],)).fetchall():
-                _signal(db, change["kind"], change["record_id"], journal=False)
-        current = db.execute("SELECT value FROM semantic_seq").fetchone()[0]
+        registered = now()
+        db.execute("INSERT OR IGNORE INTO semantic_models(model,registered_at,registration_complete) VALUES(?,?,0)",
+                   (self.key, registered))
+        db.execute("""INSERT OR IGNORE INTO semantic_models(model,registered_at,registration_complete)
+            SELECT model,?,0 FROM (SELECT model FROM semantic_progress UNION
+            SELECT model FROM semantic_bootstrap UNION SELECT DISTINCT model FROM vector_done
+            UNION SELECT DISTINCT model FROM vector_chunks)""", (registered,))
+        for row in db.execute("SELECT model FROM semantic_models WHERE registration_complete=0 ORDER BY model").fetchall():
+            # One-time reconciliation per known model: the legacy watermark may
+            # already claim progress for work that was never completed.
+            self._reconcile_model(db, row["model"])
+            db.execute("UPDATE semantic_models SET registration_complete=1 WHERE model=?", (row["model"],))
+        # The clock position is recorded for legacy inspection only; correctness
+        # no longer depends on replaying the (pruned, diagnostic) change history.
+        current = db.execute("SELECT value FROM semantic_seq WHERE id=1").fetchone()[0]
         db.execute("""INSERT INTO semantic_progress VALUES(?,?,?)
             ON CONFLICT(model) DO UPDATE SET seq=excluded.seq,updated_at=excluded.updated_at""",
                    (self.key, current, now()))
-        # Retention: never prune below the slowest tracked revision, and never
-        # keep more than the bounded window; a pruned gap triggers reconciliation
-        # above, so correctness survives any retention policy.
-        floor = db.execute("SELECT COALESCE(MIN(seq),0) FROM semantic_progress").fetchone()[0]
-        db.execute("DELETE FROM semantic_history WHERE seq<?", (max(floor, current - HISTORY_RETENTION),))
+        db.execute("DELETE FROM semantic_history WHERE seq<?", (current - HISTORY_RETENTION,))
 
-    def _reconcile(self, db):
-        """Bounded canonical diff: adopt live records this revision lacks and
-        retire vectors whose record is gone. Never journals new history."""
+    def _reconcile_model(self, db, model):
+        """Bounded canonical diff for one registered revision: adopt live records
+        that lack durable completion under this model, and enqueue the global
+        retirement of this model's vectors whose record is gone.
+
+        Obligations land directly in the model's own queue - never the shared
+        inbox - so registering one revision does not re-request work from the
+        others. Revisions come from the same monotonic clock, so acknowledgment
+        guards stay comparable. Valid durable vectors are preserved: only missing
+        completion is enqueued. Never journals new history.
+        """
         for row in db.execute("""SELECT r.id FROM records r WHERE r.deleted=0
                 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)
                 AND NOT EXISTS(SELECT 1 FROM vector_done d WHERE d.model=? AND d.record_id=r.id)""",
-                              (self.key,)).fetchall():
-            _signal(db, "index", row["id"], journal=False)
+                              (model,)).fetchall():
+            _model_upsert(db, model, row["id"], _next_seq(db))
         for row in db.execute("""SELECT DISTINCT v.record_id FROM
-                (SELECT record_id FROM vector_chunks UNION SELECT record_id FROM vector_done) v
+                (SELECT record_id FROM vector_chunks WHERE model=?
+                 UNION SELECT record_id FROM vector_done WHERE model=?) v
                 WHERE NOT EXISTS(SELECT 1 FROM records r WHERE r.id=v.record_id AND r.deleted=0
-                AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1))""").fetchall():
+                AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1))""",
+                (model, model)).fetchall():
             _signal(db, "retire", row["record_id"], journal=False)
 
     def _add(self, row):
@@ -322,13 +360,17 @@ class SemanticIndex:
 
         Retirement work is only created by canonical mutators, so processing a
         row is a targeted delete; no archive-wide sweep is required or run.
-        A newer desired state on the same record (a restore that raced ahead of
-        processing) lives on the queue row itself and is acknowledged only by
-        revision, so it survives this erasure.
+        Superseded per-model obligations and every model's completion/failure
+        markers for the record are cancelled in the same transaction, so no
+        revision later "finishes" work for evidence that is gone. A newer
+        desired state on the shared row (a restore that raced ahead of
+        processing) lives on the queue itself and is acknowledged only by
+        revision, so it survives this erasure and re-creates fresh obligations.
         """
         db.execute("DELETE FROM vector_chunks WHERE record_id=?", (record_id,))
         db.execute("DELETE FROM vector_done WHERE record_id=?", (record_id,))
         db.execute("DELETE FROM vector_failures WHERE record_id=?", (record_id,))
+        db.execute("DELETE FROM semantic_model_work WHERE record_id=?", (record_id,))
         with self.lock:
             for label in [label for label, row in self.rows.items() if row[0] == record_id]:
                 if self.index: self.index.mark_deleted(label)
@@ -338,7 +380,8 @@ class SemanticIndex:
         with self.sync_lock:
             processed = 0
             due = time.time()
-            # Durable retirement work runs first: bounded, targeted erases.
+            # Durable retirement work runs first: bounded, targeted erases that
+            # span every model revision and cancel the obligations they supersede.
             with self.store.lock, self.store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 retire_rows = db.execute(
@@ -350,12 +393,34 @@ class SemanticIndex:
                     db.execute("DELETE FROM semantic_work WHERE record_id=? AND seq=?",
                                (row["record_id"], row["seq"]))
             processed += len(retire_rows)
-            # Index work due now; the canonical record decides what is actually
-            # wanted. Retry state and backoff live on the queue row.
+            # Distribution: a shared index signal means every registered revision
+            # must durably hold its own obligation before the signal is consumed.
+            # With no model registered (activation never ran) the signal stays put
+            # until activation establishes coverage.
+            with self.store.lock, self.store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                models = [r["model"] for r in db.execute("SELECT model FROM semantic_models")]
+                if models:
+                    signals = db.execute(
+                        "SELECT record_id,seq FROM semantic_work WHERE kind='index' AND available_at<=?"
+                        " ORDER BY seq LIMIT ?", (due, batch)).fetchall()
+                    for row in signals:
+                        for model in models:
+                            if db.execute("SELECT 1 FROM vector_done WHERE model=? AND record_id=?",
+                                          (model, row["record_id"])).fetchone():
+                                continue  # never duplicate work for a durably complete immutable record
+                            _model_upsert(db, model, row["record_id"], row["seq"])
+                        # Obligations durable in this same transaction: the shared
+                        # signal, guarded by the exact revision, may now go.
+                        db.execute("DELETE FROM semantic_work WHERE record_id=? AND seq=?",
+                                   (row["record_id"], row["seq"]))
+            # The active model consumes only its own due work: one model's failure
+            # or backoff never postpones another, and another's success never
+            # erases it. Retry state lives on the model's own row.
             with self.store.connect() as db:
                 rows = [dict(r) for r in db.execute(
-                    "SELECT record_id,seq,attempts FROM semantic_work"
-                    " WHERE kind='index' AND available_at<=? ORDER BY seq LIMIT ?", (due, batch))]
+                    "SELECT record_id,seq,attempts FROM semantic_model_work"
+                    " WHERE model=? AND available_at<=? ORDER BY seq LIMIT ?", (self.key, due, batch))]
             for row in rows:
                 try:
                     if self._index_record(row):
@@ -367,8 +432,8 @@ class SemanticIndex:
                         delay = min(3600.0, 30.0 * (2 ** row["attempts"]))
                         # A newer signal resets the row immediately; backing off
                         # the revision actually attempted must not undo it.
-                        guarded = db.execute("UPDATE semantic_work SET attempts=attempts+1,available_at=?,updated_at=? WHERE record_id=? AND seq=?",
-                                   (time.time() + delay, now(), row["record_id"], row["seq"]))
+                        guarded = db.execute("UPDATE semantic_model_work SET attempts=attempts+1,available_at=?,updated_at=? WHERE model=? AND record_id=? AND seq=?",
+                                   (time.time() + delay, now(), self.key, row["record_id"], row["seq"]))
                         if guarded.rowcount:
                             db.execute("INSERT INTO vector_failures VALUES(?,?,?,1,?) ON CONFLICT(model,record_id) DO UPDATE SET attempts=attempts+1,error=excluded.error,next_retry=excluded.next_retry",
                                        (self.key,row["record_id"],type(error).__name__,time.time()+delay))
@@ -396,13 +461,15 @@ class SemanticIndex:
                 self._add(row)
 
     def _index_record(self, row):
-        """Resolve one index request against the canonical record, then bring the
-        durable vectors, the running index and the queue to that decision.
+        """Resolve one model obligation against the canonical record, then bring
+        the durable vectors, the running index and the model's queue to that
+        decision.
 
         Returns True when the revision was fully consumed (indexed, retired or
         redundant). Raises on failure, which leaves the row retryable; the
-        acknowledgment only ever deletes the revision actually processed, so a
-        signal that arrived during embedding or publication survives.
+        acknowledgment only ever consumes the revision actually processed, so a
+        signal that arrived during embedding or publication survives - a stale
+        attempt can never remove or mark complete a newer revision.
         """
         rid, seq = row["record_id"], row["seq"]
         with self.store.connect() as db:
@@ -416,11 +483,13 @@ class SemanticIndex:
                     (self.key, rid))]
             if not live:
                 # Retired before this revision was ever taken: honor the newer
-                # canonical state instead of indexing a ghost.
+                # canonical state instead of indexing a ghost; the current
+                # obligation for a later restoration is left to its own pass.
                 with self.store.lock, self.store.connect() as db:
                     db.execute("BEGIN IMMEDIATE")
                     self._retire_record(db, rid)
-                    db.execute("DELETE FROM semantic_work WHERE record_id=? AND seq=?", (rid, seq))
+                    db.execute("DELETE FROM semantic_model_work WHERE model=? AND record_id=? AND seq=?",
+                               (self.key, rid, seq))
                 return True
             if done or stored:
                 # Durable vectors already exist: publication is idempotent and
@@ -440,12 +509,17 @@ class SemanticIndex:
             if not self._live(db, rid):
                 self._retire_record(db, rid)
             else:
-                db.execute("INSERT OR IGNORE INTO vector_done VALUES(?,?)", (self.key, rid))
-                db.execute("INSERT OR REPLACE INTO processing_readiness VALUES(?,?,?,?,?)",
-                           (rid, 'semantic', 'ready', None, now()))
-            # Acknowledge only the revision actually processed: a signal that
-            # arrived during embedding or publication survives this ack.
-            db.execute("DELETE FROM semantic_work WHERE record_id=? AND seq=?", (rid, seq))
+                current = db.execute("SELECT seq FROM semantic_model_work WHERE model=? AND record_id=?",
+                                     (self.key, rid)).fetchone()
+                if current is None or current["seq"] == seq:
+                    # Final visibility and revision check: only the obligation
+                    # actually fulfilled is discharged, and only a live record
+                    # is marked complete.
+                    db.execute("INSERT OR IGNORE INTO vector_done VALUES(?,?)", (self.key, rid))
+                    db.execute("INSERT OR REPLACE INTO processing_readiness VALUES(?,?,?,?,?)",
+                               (rid, 'semantic', 'ready', None, now()))
+                    db.execute("DELETE FROM semantic_model_work WHERE model=? AND record_id=? AND seq=?",
+                               (self.key, rid, seq))
         return True
 
     def _embed_record(self, text, rid):
@@ -509,15 +583,24 @@ class SemanticIndex:
 
     def status(self):
         with self.store.connect() as db:
-            # Pending is queue-backed: canonical writers enqueue every change, so
-            # the count stays O(backlog) instead of O(archive) per call.
-            remaining = db.execute("""SELECT count(*) FROM semantic_work w WHERE w.kind='index' AND NOT EXISTS(
-                SELECT 1 FROM vector_done d WHERE d.model=? AND d.record_id=w.record_id)""", (self.key,)).fetchone()[0]
+            # Pending is queue-backed: distribution makes every registered
+            # revision's obligation durable before the shared signal goes, so a
+            # pending count that ignored the model queues would report finished
+            # work that was never done. The union counts each record once even
+            # while a distribution transaction is mid-flight.
+            remaining = db.execute("""SELECT count(*) FROM (
+                SELECT record_id FROM semantic_model_work WHERE model=?
+                UNION SELECT record_id FROM semantic_work WHERE kind='index')""",
+                (self.key,)).fetchone()[0]
             # Unprocessed retirements mean durable vectors may still be serving
             # a record the canonical archive no longer wants indexed.
             retirements = db.execute("SELECT count(*) FROM semantic_work WHERE kind='retire'").fetchone()[0]
+            # A revision still awaiting its one-time reconciliation is coverage
+            # this archive cannot claim yet.
+            registrations = db.execute("SELECT count(*) FROM semantic_models WHERE registration_complete=0").fetchone()[0]
             failures=db.execute("SELECT count(*) FROM vector_failures f JOIN records r ON r.id=f.record_id WHERE f.model=? AND r.deleted=0 AND NOT EXISTS(SELECT 1 FROM record_visibility z WHERE z.record_id=r.id AND z.hidden=1)",(self.key,)).fetchone()[0]
         return {"enabled":True,"model_key":self.key,"failed_records":failures,"index":"hnsw" if self.hnsw else "exact_numpy",
                 "pending_records":remaining,"pending_retirements":retirements,
-                "ready":remaining==0 and retirements==0 and self.last_error is None,
+                "pending_registrations":registrations,
+                "ready":remaining==0 and retirements==0 and registrations==0 and self.last_error is None,
                 "error":self.last_error}
